@@ -1,7 +1,6 @@
-// Browser-side proof: identical core module as the Node example — the only
-// platform-specific bit is where `makeZip` comes from.
-import { makeZip } from '/node_modules/client-zip/index.js';
-import { createXlsxStream } from '/src/core/createXlsxStream.js';
+// Browser-side proof: the same package entry point as the Node example,
+// imported here as a path because this demo runs without a bundler.
+import { createXlsxStream } from '/src/index.js';
 
 const columns = [
     { name: 'id', key: 'id', pk: true },
@@ -24,7 +23,6 @@ async function generateXlsxBlob(rowCount = 200) {
         columns,
         rows: simulateUpstreamRows(rowCount),
         sheetName: 'Widgets',
-        makeZip,
     });
     // Response is a convenient built-in ReadableStream -> Blob adapter.
     return new Response(webStream).blob();
@@ -44,7 +42,6 @@ async function generateAndDownload() {
             columns,
             rows: simulateUpstreamRows(200),
             sheetName: 'Widgets',
-            makeZip,
         });
         await webStream.pipeTo(writable);
         status.textContent = 'Done (streamed to disk).';

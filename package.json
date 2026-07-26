@@ -1,9 +1,30 @@
 {
   "name": "xlsx-now",
-  "version": "0.0.1",
-  "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with styles (bold headers, PK columns)",
+  "version": "0.1.0",
+  "description": "Streaming XLSX writer with cell styles (bold headers, highlighted PK columns), for Node and the browser",
   "type": "module",
   "license": "MIT",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/core/createXlsxStream.js"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "xlsx",
+    "excel",
+    "stream",
+    "streaming",
+    "styles",
+    "browser",
+    "spreadsheet"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pilarcampana/xlsx-now.git"
+  },
   "scripts": {
     "example:node": "node examples/node/write-file.mjs",
     "example:browser": "node examples/browser/serve.mjs",

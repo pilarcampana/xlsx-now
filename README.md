@@ -38,27 +38,31 @@ The writer is split in two layers:
   (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.js` streams one
   `<row>` at a time from an `AsyncIterable` of records — nothing is
   buffered. This is what makes it isomorphic: it's just string generation.
-- **The zip container is injected, not imported.** `createXlsxStream`
-  takes a `makeZip` function as a parameter instead of importing a zip
-  library directly. Both examples pass in
-  [`client-zip`](https://github.com/Touffy/client-zip) (`makeZip`), which
+- **The zip container is pluggable.** `src/core/createXlsxStream.js` takes
+  the zip writer as a `makeZip` parameter rather than importing one, so the
+  core never pulls in a platform-specific dependency. The package entry
+  point (`xlsx-now`) wires in
+  [`client-zip`](https://github.com/Touffy/client-zip) by default, which
   builds a ZIP64 archive as a `ReadableStream<Uint8Array>` without knowing
   the total size upfront — exactly the "I don't know how many rows are
   coming" case this targets. `client-zip` is documented as browser/Deno
   targeted, but since it's plain Web Streams with no DOM APIs, it also
-  works from Node (verified below via `Readable.fromWeb`).
+  works from Node (verified below via `Readable.fromWeb`). To swap it, pass
+  your own `makeZip`, or import `xlsx-now/core` and supply one.
 
 This split is what proves the isomorphism claim: the same `src/core` files,
 byte-for-byte, ran in Node and in real Chromium and produced structurally
 equivalent, valid `.xlsx` files (see verification below).
 
+## Install
+
+```sh
+npm install xlsx-now
+```
+
 ## Node usage
 
-This isn't published to npm yet — the paths below assume you're running
-from within a clone of this repo (same as `examples/`); adjust the import
-path if you vendor `src/core` into another project.
-
-`createXlsxStream({ columns, rows, sheetName, makeZip })` returns a Web
+`createXlsxStream({ columns, rows, sheetName })` returns a Web
 `ReadableStream<Uint8Array>`. In Node, convert it to a Node stream with
 `Readable.fromWeb` and pipe it wherever you like — a file, an HTTP response,
 etc. `rows` accepts anything iterable, sync or async, so the same function
@@ -69,8 +73,7 @@ covers both a plain in-memory array and a live async iterator.
 ```js
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
-import { makeZip } from 'client-zip';
-import { createXlsxStream } from './src/core/createXlsxStream.js';
+import { createXlsxStream } from 'xlsx-now';
 
 const columns = [
     { name: 'id', key: 'id', pk: true },
@@ -84,7 +87,7 @@ const rows = [
     { id: 3, name: 'Widget 3', price: 9.99 },
 ];
 
-const webStream = createXlsxStream({ columns, rows, sheetName: 'Widgets', makeZip });
+const webStream = createXlsxStream({ columns, rows, sheetName: 'Widgets' });
 
 await new Promise((resolve, reject) => {
     Readable.fromWeb(webStream)
@@ -104,8 +107,7 @@ nothing accumulates in memory even for a data set you're still receiving
 ```js
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
-import { makeZip } from 'client-zip';
-import { createXlsxStream } from './src/core/createXlsxStream.js';
+import { createXlsxStream } from 'xlsx-now';
 
 const columns = [
     { name: 'id', key: 'id', pk: true },
@@ -124,7 +126,6 @@ const webStream = createXlsxStream({
     columns,
     rows: fetchRowsFromUpstream(),
     sheetName: 'Widgets',
-    makeZip,
 });
 
 await new Promise((resolve, reject) => {
@@ -161,7 +162,7 @@ independent library (`openpyxl`, Python) and confirming: valid zip/xlsx
 structure, header row bold, PK column (`id`) filled in both the header and
 data rows, non-PK columns unstyled.
 
-## What this PoC does *not* cover yet
+## Current limitations
 
 - **Reading `.xlsx`.** Not attempted — this is a well-solved problem
   (SheetJS, `exceljs`); no reason to build it from scratch here.
@@ -173,6 +174,6 @@ data rows, non-PK columns unstyled.
   date values as Excel serial numbers; giving date columns a real date
   `numFmt` (the same idea as the PK/header styles) is a small, natural
   follow-up, not a redesign.
-- **Compression.** `client-zip` stores files uncompressed (no `deflate`).
-  Fine for a PoC; worth benchmarking file size vs. a compressing zip
-  writer before this goes further.
+- **Compression.** `client-zip` stores files uncompressed (no `deflate`),
+  so output files are larger than they need to be — worth benchmarking
+  against a compressing zip writer.

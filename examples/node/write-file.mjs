@@ -3,8 +3,7 @@
 // the full row set is never held in memory at once.
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
-import { makeZip } from 'client-zip';
-import { createXlsxStream } from '../../src/core/createXlsxStream.js';
+import { createXlsxStream } from '../../src/index.js';
 
 const columns = [
     { name: 'id', key: 'id', pk: true },
@@ -33,7 +32,6 @@ const webStream = createXlsxStream({
     columns,
     rows: fetchRowsFromUpstream(),
     sheetName: 'Widgets',
-    makeZip,
 });
 
 const outPath = new URL('../../out/example-node.xlsx', import.meta.url);
