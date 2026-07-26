@@ -1,0 +1,19 @@
+{
+  "name": "xlsx-now",
+  "version": "0.0.1",
+  "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with styles (bold headers, PK columns)",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "example:node": "node examples/node/write-file.mjs",
+    "example:browser": "node examples/browser/serve.mjs",
+    "example:browser:test": "node examples/browser/run-in-chromium-test.mjs"
+  },
+  "dependencies": {
+    "client-zip": "^2.4.6"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.0"
+  }
+}
+
