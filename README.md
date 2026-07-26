@@ -52,6 +52,92 @@ This split is what proves the isomorphism claim: the same `src/core` files,
 byte-for-byte, ran in Node and in real Chromium and produced structurally
 equivalent, valid `.xlsx` files (see verification below).
 
+## Node usage
+
+This isn't published to npm yet — the paths below assume you're running
+from within a clone of this repo (same as `examples/`); adjust the import
+path if you vendor `src/core` into another project.
+
+`createXlsxStream({ columns, rows, sheetName, makeZip })` returns a Web
+`ReadableStream<Uint8Array>`. In Node, convert it to a Node stream with
+`Readable.fromWeb` and pipe it wherever you like — a file, an HTTP response,
+etc. `rows` accepts anything iterable, sync or async, so the same function
+covers both a plain in-memory array and a live async iterator.
+
+### From an array of data
+
+```js
+import { createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { makeZip } from 'client-zip';
+import { createXlsxStream } from './src/core/createXlsxStream.js';
+
+const columns = [
+    { name: 'id', key: 'id', pk: true },
+    { name: 'name', key: 'name' },
+    { name: 'price', key: 'price' },
+];
+
+const rows = [
+    { id: 1, name: 'Widget 1', price: 3.33 },
+    { id: 2, name: 'Widget 2', price: 6.66 },
+    { id: 3, name: 'Widget 3', price: 9.99 },
+];
+
+const webStream = createXlsxStream({ columns, rows, sheetName: 'Widgets', makeZip });
+
+await new Promise((resolve, reject) => {
+    Readable.fromWeb(webStream)
+        .pipe(createWriteStream('widgets.xlsx'))
+        .on('finish', resolve)
+        .on('error', reject);
+});
+```
+
+### From an async iterator (stream)
+
+Same call, but `rows` is an async generator instead of an array — each
+record is turned into a `<row>` and written out as soon as it arrives, so
+nothing accumulates in memory even for a data set you're still receiving
+(e.g. a DB cursor or an NDJSON response from another service).
+
+```js
+import { createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { makeZip } from 'client-zip';
+import { createXlsxStream } from './src/core/createXlsxStream.js';
+
+const columns = [
+    { name: 'id', key: 'id', pk: true },
+    { name: 'name', key: 'name' },
+    { name: 'price', key: 'price' },
+];
+
+async function* fetchRowsFromUpstream() {
+    // e.g. reading a DB cursor, or `for await (const line of ndjsonResponse.body)`
+    for (let i = 1; i <= 100_000; i++) {
+        yield { id: i, name: `Widget ${i}`, price: Math.round(i * 3.33 * 100) / 100 };
+    }
+}
+
+const webStream = createXlsxStream({
+    columns,
+    rows: fetchRowsFromUpstream(),
+    sheetName: 'Widgets',
+    makeZip,
+});
+
+await new Promise((resolve, reject) => {
+    Readable.fromWeb(webStream)
+        .pipe(createWriteStream('widgets.xlsx'))
+        .on('finish', resolve)
+        .on('error', reject);
+});
+```
+
+See `examples/node/write-file.mjs` for the runnable version of the
+streaming example.
+
 ## Try it
 
 ```sh
