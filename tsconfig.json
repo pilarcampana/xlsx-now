@@ -1,0 +1,29 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        // NodeNext keeps the emitted ESM runnable as-is: relative imports carry
+        // their ".js" extension, so the same output loads in Node and, with no
+        // bundler, straight from a <script type="module"> in the browser.
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        // DOM is needed for ReadableStream/Blob in src/core (which must stay
+        // browser-safe); "node" types are only used by the examples.
+        "lib": ["ES2022", "DOM"],
+        "types": ["node"],
+        "rootDir": ".",
+        "outDir": "dist",
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitOverride": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "exactOptionalPropertyTypes": true,
+        "verbatimModuleSyntax": true,
+        "declaration": true,
+        "declarationMap": true,
+        "sourceMap": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": ["src/**/*.ts", "examples/**/*.ts"]
+}

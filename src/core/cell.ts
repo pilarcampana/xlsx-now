@@ -1,8 +1,11 @@
+import type { CellValue } from './types.js';
+import type { StyleIndex } from './styles.js';
+
 // Days between 1900-01-01 and 1970-01-01 (Excel's epoch quirk on Windows).
 const EXCEL_EPOCH_OFFSET_DAYS = 25569;
 const MS_PER_DAY = 86400000;
 
-export function sanitizeText(value) {
+export function sanitizeText(value: unknown): string {
     return String(value)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -12,7 +15,7 @@ export function sanitizeText(value) {
 }
 
 // 0-based column index -> spreadsheet column letters ("A", "B", ..., "AA", ...).
-export function columnLetters(index) {
+export function columnLetters(index: number): string {
     let n = index + 1;
     let letters = '';
     while (n > 0) {
@@ -23,13 +26,13 @@ export function columnLetters(index) {
     return letters;
 }
 
-export function cellRef(colIndex, rowNumber) {
+export function cellRef(colIndex: number, rowNumber: number): string {
     return `${columnLetters(colIndex)}${rowNumber}`;
 }
 
 // Renders a single <c> element. `styleIndex` is a 0-based index into
 // styles.xml's <cellXfs>, or 0 (falsy) for the default style.
-export function cellXml(value, ref, styleIndex) {
+export function cellXml(value: CellValue, ref: string, styleIndex: StyleIndex): string {
     const s = styleIndex ? ` s="${styleIndex}"` : '';
 
     if (value === null || value === undefined || value === '') {

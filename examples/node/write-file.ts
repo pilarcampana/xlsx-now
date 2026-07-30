@@ -2,11 +2,15 @@
 // upstream NDJSON response) and are streamed straight into an .xlsx file —
 // the full row set is never held in memory at once.
 import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
+import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import { makeZip } from 'client-zip';
 import { createXlsxStream } from '../../src/core/createXlsxStream.js';
+import type { Column, Row } from '../../src/core/types.js';
 
-const columns = [
+const columns: Column[] = [
     { name: 'id', key: 'id', pk: true },
     { name: 'name', key: 'name' },
     { name: 'price', key: 'price' },
@@ -14,7 +18,7 @@ const columns = [
     { name: 'created_at', key: 'createdAt' },
 ];
 
-async function* fetchRowsFromUpstream() {
+async function* fetchRowsFromUpstream(): AsyncGenerator<Row> {
     for (let i = 1; i <= 200; i++) {
         yield {
             id: i,
@@ -36,14 +40,17 @@ const webStream = createXlsxStream({
     makeZip,
 });
 
-const outPath = new URL('../../out/example-node.xlsx', import.meta.url);
-await import('node:fs/promises').then((fs) => fs.mkdir(new URL('../../out/', import.meta.url), { recursive: true }));
+// Paths are resolved from the repo root — run via `npm run example:node`.
+await mkdir(resolve('out'), { recursive: true });
+const outPath = resolve('out/example-node.xlsx');
 
-await new Promise((resolve, reject) => {
-    Readable.fromWeb(webStream)
+await new Promise<void>((resolvePromise, reject) => {
+    // Same object at runtime; the cast only bridges the DOM lib's
+    // ReadableStream declaration and node:stream/web's.
+    Readable.fromWeb(webStream as NodeWebReadableStream<Uint8Array>)
         .pipe(createWriteStream(outPath))
-        .on('finish', resolve)
+        .on('finish', resolvePromise)
         .on('error', reject);
 });
 
-console.log(`Wrote ${outPath.pathname}`);
+console.log(`Wrote ${outPath}`);

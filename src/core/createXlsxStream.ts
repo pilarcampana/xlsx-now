@@ -1,6 +1,18 @@
 import { contentTypesXml, rootRelsXml, workbookRelsXml, workbookXml } from './parts.js';
 import { sheetXmlChunks } from './sheet.js';
 import { stylesXml } from './styles.js';
+import type { Column, ForAwaitable, MakeZip, Row, ZipEntry } from './types.js';
+
+export interface CreateXlsxStreamOptions {
+    columns: readonly Column[];
+    rows: ForAwaitable<Row>;
+    sheetName?: string;
+    /**
+     * Zip builder injected by the caller (e.g. `makeZip` from `client-zip`),
+     * so this module never imports a platform-specific zip library.
+     */
+    makeZip: MakeZip;
+}
 
 /**
  * Builds a styled .xlsx as a Web ReadableStream<Uint8Array>, without ever
@@ -10,20 +22,18 @@ import { stylesXml } from './styles.js';
  * Callers inject `makeZip` (e.g. from the `client-zip` package) so the same
  * module runs unmodified in Node and in the browser — only the entry point
  * that supplies `makeZip` differs per platform.
- *
- * @param {object} options
- * @param {{ name: string, key?: string, pk?: boolean }[]} options.columns
- * @param {AsyncIterable<Record<string, unknown>> | Iterable<Record<string, unknown>>} options.rows
- * @param {string} [options.sheetName]
- * @param {(files: unknown, options?: unknown) => ReadableStream<Uint8Array>} options.makeZip
- * @returns {ReadableStream<Uint8Array>}
  */
-export function createXlsxStream({ columns, rows, sheetName = 'Sheet1', makeZip }) {
+export function createXlsxStream({
+    columns,
+    rows,
+    sheetName = 'Sheet1',
+    makeZip,
+}: CreateXlsxStreamOptions): ReadableStream<Uint8Array> {
     if (!makeZip) {
         throw new Error('createXlsxStream requires a `makeZip` implementation (e.g. from "client-zip").');
     }
 
-    const files = [
+    const files: ZipEntry[] = [
         { name: '[Content_Types].xml', input: contentTypesXml() },
         { name: '_rels/.rels', input: rootRelsXml() },
         { name: 'xl/workbook.xml', input: workbookXml(sheetName) },
