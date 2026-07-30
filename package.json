@@ -8,26 +8,41 @@
     ".": {
       "types": "./dist/src/core/index.d.ts",
       "default": "./dist/src/core/index.js"
-    }
+    },
+    "./umd": {
+      "types": "./dist/src/umd/index.d.ts",
+      "default": "./dist/umd/xlsx-now.umd.js"
+    },
+    "./dist/umd/xlsx-now.umd.js": "./dist/umd/xlsx-now.umd.js",
+    "./package.json": "./package.json"
   },
   "types": "./dist/src/core/index.d.ts",
+  "unpkg": "./dist/umd/xlsx-now.umd.js",
+  "jsdelivr": "./dist/umd/xlsx-now.umd.js",
   "files": [
     "dist/src",
+    "dist/umd",
     "src"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:umd",
+    "build:umd": "rollup -c",
     "typecheck": "tsc --noEmit",
     "example:node": "npm run build && node dist/examples/node/write-file.js",
     "example:browser": "npm run build && node dist/examples/browser/serve.js",
-    "example:browser:test": "npm run build && node dist/examples/browser/run-in-chromium-test.js"
+    "example:browser:test": "npm run build && node dist/examples/browser/run-in-chromium-test.js",
+    "example:umd:node": "npm run build && node examples/umd/require.cjs",
+    "example:umd:browser": "npm run build && node dist/examples/browser/serve.js",
+    "example:umd:browser:test": "npm run build && PAGE_PATH=/examples/umd/index.html OUT_FILE=out/example-umd-browser.xlsx node dist/examples/browser/run-in-chromium-test.js"
   },
   "dependencies": {
     "client-zip": "^2.4.6"
   },
   "devDependencies": {
+    "@rollup/plugin-node-resolve": "^16.0.3",
     "@types/node": "^26.1.2",
     "playwright-core": "^1.62.0",
+    "rollup": "^4.62.3",
     "typescript": "^5.9.3"
   }
 }

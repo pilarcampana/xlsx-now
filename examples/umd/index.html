@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>xlsx-now UMD PoC</title>
+<!-- The whole point of the UMD build: one classic <script> tag, no module
+     type, no import map, no bundler. The bundle inlines client-zip and
+     exposes everything on window.xlsxNow. -->
+<script src="/dist/umd/xlsx-now.umd.js"></script>
+</head>
+<body>
+<h1>xlsx-now — UMD (script tag) PoC</h1>
+<p>Same core writer as the ESM example, loaded as a plain global.</p>
+<button id="generate">Generate &amp; download</button>
+<p id="status"></p>
+<script>
+const columns = [
+    { name: 'id', key: 'id', pk: true },
+    { name: 'name', key: 'name' },
+    { name: 'price', key: 'price' },
+    { name: 'in_stock', key: 'inStock' },
+];
+
+async function* simulateUpstreamRows(count) {
+    for (let i = 1; i <= count; i++) {
+        yield { id: i, name: `Widget ${i}`, price: Math.round(i * 3.33 * 100) / 100, inStock: i % 5 !== 0 };
+        if (i % 25 === 0) await new Promise((r) => setTimeout(r, 0));
+    }
+}
+
+// No `makeZip` argument: the UMD bundle defaults to the client-zip builder
+// it ships with.
+function generateXlsxBlob(rowCount = 200) {
+    const webStream = window.xlsxNow.createXlsxStream({
+        columns,
+        rows: simulateUpstreamRows(rowCount),
+        sheetName: 'Widgets',
+    });
+    return new Response(webStream).blob();
+}
+
+document.getElementById('generate').addEventListener('click', () => {
+    const status = document.getElementById('status');
+    generateXlsxBlob()
+        .then((blob) => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'example-umd.xlsx';
+            a.click();
+            URL.revokeObjectURL(url);
+            status.textContent = 'Done.';
+        })
+        .catch((err) => {
+            console.error(err);
+            status.textContent = `Error: ${err && err.message ? err.message : String(err)}`;
+        });
+});
+
+// Exposed for automated testing (see examples/browser/run-in-chromium-test.ts).
+window.__generateXlsxBlob = generateXlsxBlob;
+</script>
+</body>
+</html>
