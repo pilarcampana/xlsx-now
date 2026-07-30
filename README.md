@@ -144,8 +144,8 @@ npm install
 # Node: streams 200 simulated rows into out/example-node.xlsx
 npm run example:node
 
-# Browser: serves examples/browser at http://localhost:8080 — click
-# "Generate & download" (uses the File System Access API to stream
+# Browser: serves the repo at http://localhost:8080/examples/browser/ —
+# click "Generate & download" (uses the File System Access API to stream
 # straight to disk if available, otherwise falls back to a Blob download)
 npm run example:browser
 
@@ -153,6 +153,16 @@ npm run example:browser
 # and save its output to out/example-browser.xlsx, for a quick sanity check
 npm run example:browser:test
 ```
+
+The static server behind every browser script (ESM and UMD alike — it serves
+the repo root, so one server covers both pages) is
+[`server4test`](https://www.npmjs.com/package/server4test), used
+programmatically: `examples/browser/serve.ts` exports
+`startExampleServer(port)`, which returns a `Server4Test` whose `start()`
+only resolves once the port is really listening. The Chromium check imports
+that function instead of spawning `node serve.js`, so there is no child
+process, no fixed `sleep` waiting for the port, and shutdown is just
+`await server.closeServer()` in a `finally`.
 
 Both examples were validated by loading the resulting files with an
 independent library (`openpyxl`, Python) and confirming: valid zip/xlsx
