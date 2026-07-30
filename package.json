@@ -4,16 +4,30 @@
   "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with styles (bold headers, PK columns)",
   "type": "module",
   "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/src/core/index.d.ts",
+      "default": "./dist/src/core/index.js"
+    }
+  },
+  "types": "./dist/src/core/index.d.ts",
+  "files": [
+    "dist/src",
+    "src"
+  ],
   "scripts": {
-    "example:node": "node examples/node/write-file.mjs",
-    "example:browser": "node examples/browser/serve.mjs",
-    "example:browser:test": "node examples/browser/run-in-chromium-test.mjs"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "example:node": "npm run build && node dist/examples/node/write-file.js",
+    "example:browser": "npm run build && node dist/examples/browser/serve.js",
+    "example:browser:test": "npm run build && node dist/examples/browser/run-in-chromium-test.js"
   },
   "dependencies": {
     "client-zip": "^2.4.6"
   },
   "devDependencies": {
-    "playwright-core": "^1.62.0"
+    "@types/node": "^26.1.2",
+    "playwright-core": "^1.62.0",
+    "typescript": "^5.9.3"
   }
 }
-

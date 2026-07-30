@@ -1,6 +1,6 @@
 import { sanitizeText } from './cell.js';
 
-export function contentTypesXml() {
+export function contentTypesXml(): string {
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
@@ -13,7 +13,7 @@ export function contentTypesXml() {
     );
 }
 
-export function rootRelsXml() {
+export function rootRelsXml(): string {
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
@@ -22,7 +22,7 @@ export function rootRelsXml() {
     );
 }
 
-export function workbookXml(sheetName) {
+export function workbookXml(sheetName: string): string {
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
@@ -31,7 +31,7 @@ export function workbookXml(sheetName) {
     );
 }
 
-export function workbookRelsXml() {
+export function workbookRelsXml(): string {
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +

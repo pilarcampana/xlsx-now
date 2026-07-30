@@ -33,9 +33,9 @@ and streamable) are both reused here.
 
 The writer is split in two layers:
 
-- **`src/core/*.js` — pure, dependency-free XLSX XML generation.** No I/O,
-  no zip library import. `styles.js` defines a small style registry
-  (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.js` streams one
+- **`src/core/*.ts` — pure, dependency-free XLSX XML generation.** No I/O,
+  no zip library import. `styles.ts` defines a small style registry
+  (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.ts` streams one
   `<row>` at a time from an `AsyncIterable` of records — nothing is
   buffered. This is what makes it isomorphic: it's just string generation.
 - **The zip container is injected, not imported.** `createXlsxStream`
@@ -52,10 +52,37 @@ This split is what proves the isomorphism claim: the same `src/core` files,
 byte-for-byte, ran in Node and in real Chromium and produced structurally
 equivalent, valid `.xlsx` files (see verification below).
 
+## TypeScript, no bundler
+
+Everything is written in TypeScript under `strict` (plus
+`noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`) and compiled
+with `tsc` alone — there is no bundler anywhere in the pipeline, which keeps
+the "same file runs on both platforms" claim easy to check.
+
+`tsconfig.json` uses `module: NodeNext`, so relative imports carry their
+`.js` extension in both source and output and the emitted ESM in `dist/`
+loads unchanged in Node **and** straight from a `<script type="module">` in
+the browser. The one specifier a browser can't resolve on its own —
+the bare `client-zip` — is mapped by an
+[import map](examples/browser/index.html) instead of a build step.
+
+The public surface is `src/core/index.ts`, which exports
+`createXlsxStream` plus the types callers need (`Column`, `Row`,
+`CellValue`, `MakeZip`). `MakeZip` is declared structurally, so
+`client-zip`'s `makeZip` satisfies it without `src/core` ever depending on
+that package.
+
+```sh
+npm run build      # tsc -> dist/ (JS + .d.ts + source maps)
+npm run typecheck  # tsc --noEmit
+```
+
 ## Try it
 
 ```sh
 npm install
+
+# Each example script runs `tsc` first, so no separate build step is needed.
 
 # Node: streams 200 simulated rows into out/example-node.xlsx
 npm run example:node
@@ -83,7 +110,7 @@ data rows, non-PK columns unstyled.
   Access API.** Firefox/Safari don't support `showSaveFilePicker`, so on
   those the current fallback still generates incrementally but has to
   materialize a `Blob` before the browser's normal download flow can start.
-- **Number/date formatting on top of styles.** `cell.js` already writes
+- **Number/date formatting on top of styles.** `cell.ts` already writes
   date values as Excel serial numbers; giving date columns a real date
   `numFmt` (the same idea as the PK/header styles) is a small, natural
   follow-up, not a redesign.

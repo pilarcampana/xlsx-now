@@ -7,9 +7,12 @@ export const STYLE = {
     HEADER: 1,
     PK: 2,
     PK_HEADER: 3,
-};
+} as const;
 
-export function stylesXml() {
+/** A 0-based index into styles.xml's <cellXfs>. */
+export type StyleIndex = (typeof STYLE)[keyof typeof STYLE];
+
+export function stylesXml(): string {
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
