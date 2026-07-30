@@ -9,6 +9,11 @@ import { resolve } from 'node:path';
 
 const CHROMIUM_PATH = process.env['CHROMIUM_PATH'] ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 
+// Both browser examples expose the same `window.__generateXlsxBlob` hook, so
+// this harness drives either one: the ESM page (default) or the UMD page.
+const PAGE_PATH = process.env['PAGE_PATH'] ?? '/';
+const OUT_FILE = process.env['OUT_FILE'] ?? 'out/example-browser.xlsx';
+
 // Paths are resolved from the repo root — run via `npm run example:browser:test`.
 const server = spawn('node', ['dist/examples/browser/serve.js'], {
     stdio: 'inherit',
@@ -22,7 +27,7 @@ try {
     page.on('console', (msg) => console.log('[browser]', msg.text()));
     page.on('pageerror', (err) => console.error('[browser error]', err));
 
-    await page.goto('http://localhost:8091/');
+    await page.goto(`http://localhost:8091${PAGE_PATH}`);
     const base64 = await page.evaluate(async () => {
         const blob = await window.__generateXlsxBlob!(200);
         const buf = await blob.arrayBuffer();
@@ -33,7 +38,7 @@ try {
     });
 
     await mkdir(resolve('out'), { recursive: true });
-    const outPath = resolve('out/example-browser.xlsx');
+    const outPath = resolve(OUT_FILE);
     await writeFile(outPath, Buffer.from(base64, 'base64'));
     console.log(`Wrote ${outPath}`);
 
