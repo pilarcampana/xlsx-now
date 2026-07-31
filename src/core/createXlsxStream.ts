@@ -1,38 +1,34 @@
 import { contentTypesXml, rootRelsXml, workbookRelsXml, workbookXml } from './parts.js';
 import { sheetXmlChunks } from './sheet.js';
 import { stylesXml } from './styles.js';
-import type { Column, ForAwaitable, MakeZip, Row, ZipEntry } from './types.js';
+import type { Column, ForAwaitable, Row, ZipEntry } from './types.js';
+import { createZipStream, DEFAULT_COMPRESSION_LEVEL, type CompressionLevel } from './zip.js';
 
 export interface CreateXlsxStreamOptions {
     columns: readonly Column[];
     rows: ForAwaitable<Row>;
     sheetName?: string;
     /**
-     * Zip builder injected by the caller (e.g. `makeZip` from `client-zip`),
-     * so this module never imports a platform-specific zip library.
+     * Deflate effort, 0-9. Defaults to 6; `0` writes the parts uncompressed,
+     * which is faster but leaves the file roughly ten times bigger.
      */
-    makeZip: MakeZip;
+    compressionLevel?: CompressionLevel;
 }
 
 /**
  * Builds a styled .xlsx as a Web ReadableStream<Uint8Array>, without ever
  * holding the full workbook (or the full row set) in memory.
  *
- * Platform-agnostic on purpose: it never imports a zip library directly.
- * Callers inject `makeZip` (e.g. from the `client-zip` package) so the same
- * module runs unmodified in Node and in the browser — only the entry point
- * that supplies `makeZip` differs per platform.
+ * The same module runs unmodified in Node and in the browser: the XML is
+ * plain string generation and the zip container underneath is pure JS
+ * (`fflate`), so nothing here touches `fs`, `zlib` or the DOM.
  */
 export function createXlsxStream({
     columns,
     rows,
     sheetName = 'Sheet1',
-    makeZip,
+    compressionLevel = DEFAULT_COMPRESSION_LEVEL,
 }: CreateXlsxStreamOptions): ReadableStream<Uint8Array> {
-    if (!makeZip) {
-        throw new Error('createXlsxStream requires a `makeZip` implementation (e.g. from "client-zip").');
-    }
-
     const files: ZipEntry[] = [
         { name: '[Content_Types].xml', input: contentTypesXml() },
         { name: '_rels/.rels', input: rootRelsXml() },
@@ -42,5 +38,5 @@ export function createXlsxStream({
         { name: 'xl/worksheets/sheet1.xml', input: sheetXmlChunks(columns, rows) },
     ];
 
-    return makeZip(files);
+    return createZipStream(files, compressionLevel);
 }

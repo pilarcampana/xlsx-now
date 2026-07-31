@@ -23,7 +23,7 @@ export async function startExampleServer(port: number = DEFAULT_PORT): Promise<S
         port,
         verbose: false,
         // Served from the repo root: index.html loads the compiled module from
-        // /dist and resolves the bare "client-zip" specifier to /node_modules.
+        // /dist and resolves the bare "fflate" specifier to /node_modules.
         'public-dir': resolve('.'),
         'serve-content': {
             // "" (no extension) has to be allowed for `index` to kick in on

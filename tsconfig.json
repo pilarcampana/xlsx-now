@@ -23,7 +23,10 @@
         "declarationMap": true,
         "sourceMap": true,
         "skipLibCheck": true,
-        "forceConsistentCasingInFileNames": true
+        "forceConsistentCasingInFileNames": true,
+        // `exceljs` is CommonJS-only and has to be imported as a default; this
+        // is used by scripts/, never by src/.
+        "esModuleInterop": true
     },
-    "include": ["src/**/*.ts", "examples/**/*.ts"]
+    "include": ["src/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"]
 }

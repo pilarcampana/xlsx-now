@@ -1,7 +1,6 @@
-// Browser-side proof: identical core module as the Node example — the only
-// platform-specific bit is where `makeZip` comes from. The bare "client-zip"
-// specifier is resolved in the browser by the import map in index.html.
-import { makeZip } from 'client-zip';
+// Browser-side proof: byte-for-byte the same core module as the Node example,
+// called exactly the same way. The bare "fflate" specifier that the core
+// imports is resolved in the browser by the import map in index.html.
 import { createXlsxStream } from '../../src/core/createXlsxStream.js';
 import type { Column, Row } from '../../src/core/types.js';
 
@@ -34,7 +33,6 @@ async function generateXlsxBlob(rowCount = 200): Promise<Blob> {
         columns,
         rows: simulateUpstreamRows(rowCount),
         sheetName: 'Widgets',
-        makeZip,
     });
     // Response is a convenient built-in ReadableStream -> Blob adapter.
     return new Response(webStream).blob();
@@ -54,7 +52,6 @@ async function generateAndDownload(): Promise<void> {
             columns,
             rows: simulateUpstreamRows(200),
             sheetName: 'Widgets',
-            makeZip,
         });
         await webStream.pipeTo(writable);
         status.textContent = 'Done (streamed to disk).';

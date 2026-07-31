@@ -13,19 +13,15 @@ export interface Column {
     pk?: boolean;
 }
 
-/** Accepts sync and async sources alike (same convention as `client-zip`). */
+/** Accepts sync and async sources alike, so `rows` can be either. */
 export type ForAwaitable<T> = AsyncIterable<T> | Iterable<T>;
 
 /**
- * One entry of the zip container: either a whole part as a string, or a part
+ * One entry of the zip container: a whole part as a string, or a part
  * produced incrementally (the worksheet).
  */
-export type ZipEntry =
-    | { name: string; input: string }
-    | { name: string; input: AsyncIterable<string> };
-
-/**
- * The injected zip builder. Structurally satisfied by `makeZip` from
- * `client-zip`, without this package having to depend on it.
- */
-export type MakeZip = (files: ForAwaitable<ZipEntry>) => ReadableStream<Uint8Array>;
+export interface ZipEntry {
+    /** Path inside the archive, e.g. `xl/worksheets/sheet1.xml`. */
+    name: string;
+    input: string | AsyncIterable<string>;
+}

@@ -21,14 +21,14 @@ const commonjsMarker = {
 };
 
 export default {
-    input: 'dist/src/umd/index.js',
+    input: 'dist/src/core/index.js',
     output: {
         file: 'dist/umd/xlsx-now.umd.js',
         format: 'umd',
         name: 'xlsxNow',
         sourcemap: true,
-        // `client-zip` is inlined (see src/umd/index.ts) so the bundle works
-        // from a script tag with nothing else to load.
+        // `fflate` is inlined so the bundle works from a script tag with
+        // nothing else to load.
         inlineDynamicImports: true,
     },
     plugins: [nodeResolve({ browser: true }), commonjsMarker],

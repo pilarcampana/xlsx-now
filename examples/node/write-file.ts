@@ -6,7 +6,6 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
-import { makeZip } from 'client-zip';
 import { createXlsxStream } from '../../src/core/createXlsxStream.js';
 import type { Column, Row } from '../../src/core/types.js';
 
@@ -37,7 +36,6 @@ const webStream = createXlsxStream({
     columns,
     rows: fetchRowsFromUpstream(),
     sheetName: 'Widgets',
-    makeZip,
 });
 
 // Paths are resolved from the repo root — run via `npm run example:node`.

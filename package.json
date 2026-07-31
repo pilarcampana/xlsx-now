@@ -10,7 +10,7 @@
       "default": "./dist/src/core/index.js"
     },
     "./umd": {
-      "types": "./dist/src/umd/index.d.ts",
+      "types": "./dist/src/core/index.d.ts",
       "default": "./dist/umd/xlsx-now.umd.js"
     },
     "./dist/umd/xlsx-now.umd.js": "./dist/umd/xlsx-now.umd.js",
@@ -28,6 +28,8 @@
     "build": "tsc && npm run build:umd",
     "build:umd": "rollup -c",
     "typecheck": "tsc --noEmit",
+    "benchmark": "npm run build && node dist/examples/node/benchmark.js",
+    "validate": "npm run build && node dist/scripts/validate-xlsx.js",
     "example:node": "npm run build && node dist/examples/node/write-file.js",
     "example:browser": "npm run build && node dist/examples/browser/serve.js",
     "example:browser:test": "npm run build && node dist/examples/browser/run-in-chromium-test.js",
@@ -36,14 +38,17 @@
     "example:umd:browser:test": "npm run build && PAGE_PATH=/examples/umd/index.html OUT_FILE=out/example-umd-browser.xlsx node dist/examples/browser/run-in-chromium-test.js"
   },
   "dependencies": {
-    "client-zip": "^2.4.6"
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@types/node": "^26.1.2",
+    "@types/yauzl": "^3.4.0",
+    "exceljs": "^4.4.0",
     "playwright-core": "^1.62.0",
     "rollup": "^4.62.3",
     "server4test": "^1.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "yauzl": "^3.4.0"
   }
 }
