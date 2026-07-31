@@ -52,6 +52,92 @@ This split is what proves the isomorphism claim: the same `src/core` files,
 byte-for-byte, ran in Node and in real Chromium and produced structurally
 equivalent, valid `.xlsx` files (see verification below).
 
+## Node usage
+
+`createXlsxStream({ columns, rows, sheetName, makeZip })` returns a Web
+`ReadableStream<Uint8Array>`. In Node, convert it to a Node stream with
+`Readable.fromWeb` and pipe it wherever you like — a file, an HTTP
+response, etc. `makeZip` comes from `client-zip`; see
+[Architecture](#architecture) for why it is passed in rather than imported
+by the core.
+
+`rows` accepts anything iterable, sync or async, so the same call covers
+both a plain in-memory array and a live async iterator.
+
+### Writing an array of data to a file
+
+```js
+import { createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { makeZip } from 'client-zip';
+import { createXlsxStream } from 'xlsx-now';
+
+const columns = [
+    { name: 'id', key: 'id', pk: true },
+    { name: 'name', key: 'name' },
+    { name: 'price', key: 'price' },
+];
+
+const rows = [
+    { id: 1, name: 'Widget 1', price: 3.33 },
+    { id: 2, name: 'Widget 2', price: 6.66 },
+    { id: 3, name: 'Widget 3', price: 9.99 },
+];
+
+const xlsxStream = createXlsxStream({ columns, rows, sheetName: 'Widgets', makeZip });
+
+await new Promise((resolve, reject) => {
+    Readable.fromWeb(xlsxStream)
+        .pipe(createWriteStream('widgets.xlsx'))
+        .on('finish', resolve)
+        .on('error', reject);
+});
+```
+
+### Writing an async iterator to a file
+
+Same call, but `rows` is an async generator instead of an array. Each
+record becomes a `<row>` and is written out as soon as it arrives, so
+memory stays flat even for a data set still being received — a database
+cursor, or an NDJSON response from another service.
+
+```js
+import { createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { makeZip } from 'client-zip';
+import { createXlsxStream } from 'xlsx-now';
+
+const columns = [
+    { name: 'id', key: 'id', pk: true },
+    { name: 'name', key: 'name' },
+    { name: 'price', key: 'price' },
+];
+
+async function* fetchRowsFromUpstream() {
+    // e.g. a DB cursor, or `for await (const line of ndjsonResponse.body)`
+    for (let i = 1; i <= 100_000; i++) {
+        yield { id: i, name: `Widget ${i}`, price: Math.round(i * 3.33 * 100) / 100 };
+    }
+}
+
+const xlsxStream = createXlsxStream({
+    columns,
+    rows: fetchRowsFromUpstream(),
+    sheetName: 'Widgets',
+    makeZip,
+});
+
+await new Promise((resolve, reject) => {
+    Readable.fromWeb(xlsxStream)
+        .pipe(createWriteStream('widgets.xlsx'))
+        .on('finish', resolve)
+        .on('error', reject);
+});
+```
+
+[`examples/node/write-file.ts`](examples/node/write-file.ts) is a runnable
+version of this second case.
+
 ## TypeScript, no bundler on the main path
 
 Everything is written in TypeScript under `strict` (plus
