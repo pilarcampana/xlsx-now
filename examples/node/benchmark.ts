@@ -6,8 +6,7 @@
 import { createWriteStream } from 'node:fs';
 import { mkdir, stat, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { Readable } from 'node:stream';
-import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
+import { toNodeReadable } from '../../src/node/index.js';
 import { createXlsxStream } from '../../src/core/createXlsxStream.js';
 import type { CompressionLevel } from '../../src/core/zip.js';
 import type { Column, Row } from '../../src/core/types.js';
@@ -59,7 +58,7 @@ async function run(level: CompressionLevel): Promise<Result> {
     });
 
     await new Promise<void>((resolvePromise, reject) => {
-        Readable.fromWeb(webStream as NodeWebReadableStream<Uint8Array>)
+        toNodeReadable(webStream)
             .pipe(createWriteStream(outPath))
             .on('finish', resolvePromise)
             .on('error', reject);
