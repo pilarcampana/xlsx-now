@@ -33,33 +33,60 @@ and streamable) are both reused here.
 
 The writer is split in two layers:
 
-- **`src/core/*.ts` — pure, dependency-free XLSX XML generation.** No I/O,
-  no zip library import. `styles.ts` defines a small style registry
-  (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.ts` streams one
-  `<row>` at a time from an `AsyncIterable` of records — nothing is
-  buffered. This is what makes it isomorphic: it's just string generation.
-- **The zip container is injected, not imported.** `createXlsxStream`
-  takes a `makeZip` function as a parameter instead of importing a zip
-  library directly. Both examples pass in
-  [`client-zip`](https://github.com/Touffy/client-zip) (`makeZip`), which
-  builds a ZIP64 archive as a `ReadableStream<Uint8Array>` without knowing
-  the total size upfront — exactly the "I don't know how many rows are
-  coming" case this targets. `client-zip` is documented as browser/Deno
-  targeted, but since it's plain Web Streams with no DOM APIs, it also
-  works from Node (verified below via `Readable.fromWeb`).
+- **XLSX XML generation — no I/O at all.** `styles.ts` defines a small style
+  registry (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.ts` streams one
+  `<row>` at a time from an `AsyncIterable` of records — nothing is buffered.
+  It's just string generation, which is half of what makes this isomorphic.
+- **The zip container — `fflate`, wrapped in `zip.ts`.** See
+  [The zip container](#the-zip-container) for why that library. `zip.ts` is a
+  thin adapter, not a zip implementation: `fflate` reports its output through
+  a callback, and the public API here is a Web `ReadableStream`, so the
+  adapter bridges the two and makes backpressure reach back to the row source.
+  Every byte of the archive format — local headers, CRCs, data descriptors,
+  central directory — is written by `fflate`.
 
-This split is what proves the isomorphism claim: the same `src/core` files,
-byte-for-byte, ran in Node and in real Chromium and produced structurally
-equivalent, valid `.xlsx` files (see verification below).
+Both halves are pure JS with no `fs`, `zlib` or DOM anywhere, which is what
+proves the isomorphism claim: the same `src/core` files, byte-for-byte, ran in
+Node and in real Chromium and produced structurally equivalent, valid `.xlsx`
+files (see verification below).
+
+## The zip container
+
+An `.xlsx` is a zip archive, but not any zip archive will do. This project
+needs four things at once, and the fourth one is what rules out most of the
+field:
+
+1. **Deflate compression.** The XML is extremely repetitive; see the
+   [benchmark](#compression-benchmark) — it compresses to about a tenth.
+2. **ZIP 2.0, never ZIP64.** Office rejects ZIP64 containers.
+3. **Streaming without knowing the size upfront.** The whole point of the
+   project is not knowing how many rows are coming. That forces *data
+   descriptors*: the sizes and CRC of each entry are written after its data
+   instead of in the header.
+4. **The same code in Node and in the browser.** `archiver`, `yazl` and
+   `zip-stream` all depend on Node's `zlib`, and `jszip` buffers the whole
+   archive before emitting anything.
+
+[`fflate`](https://github.com/101arrowz/fflate) satisfies all four: pure JS,
+no dependencies, ~8 kB, and its `Zip`/`ZipDeflate` classes emit output as data
+is pushed in. Verified in the generated files: entries declare version 2.0,
+compression method deflate, and bit 3 of the general-purpose flag set with
+zeroed sizes in the local header.
+
+The previous container, `client-zip`, failed (1) and (2) — its own README says
+*"MS Office documents must be stored using ZIP version 2.0, use client-zip^1
+to generate those"*. Files produced before this change declared version 4.5
+(ZIP64) on every entry and stored the parts uncompressed.
+
+`compressionLevel` (0-9, default 6) is exposed on `createXlsxStream`; `0`
+stores the parts uncompressed, which is the old behaviour.
 
 ## Node usage
 
-`createXlsxStream({ columns, rows, sheetName, makeZip })` returns a Web
+`createXlsxStream({ columns, rows, sheetName })` returns a Web
 `ReadableStream<Uint8Array>`. In Node, convert it to a Node stream with
 `Readable.fromWeb` and pipe it wherever you like — a file, an HTTP
-response, etc. `makeZip` comes from `client-zip`; see
-[Architecture](#architecture) for why it is passed in rather than imported
-by the core.
+response, etc.
 
 `rows` accepts anything iterable, sync or async, so the same call covers
 both a plain in-memory array and a live async iterator.
@@ -69,7 +96,6 @@ both a plain in-memory array and a live async iterator.
 ```js
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
-import { makeZip } from 'client-zip';
 import { createXlsxStream } from 'xlsx-now';
 
 const columns = [
@@ -84,7 +110,7 @@ const rows = [
     { id: 3, name: 'Widget 3', price: 9.99 },
 ];
 
-const xlsxStream = createXlsxStream({ columns, rows, sheetName: 'Widgets', makeZip });
+const xlsxStream = createXlsxStream({ columns, rows, sheetName: 'Widgets' });
 
 await new Promise((resolve, reject) => {
     Readable.fromWeb(xlsxStream)
@@ -104,7 +130,6 @@ cursor, or an NDJSON response from another service.
 ```js
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
-import { makeZip } from 'client-zip';
 import { createXlsxStream } from 'xlsx-now';
 
 const columns = [
@@ -124,7 +149,6 @@ const xlsxStream = createXlsxStream({
     columns,
     rows: fetchRowsFromUpstream(),
     sheetName: 'Widgets',
-    makeZip,
 });
 
 await new Promise((resolve, reject) => {
@@ -137,6 +161,27 @@ await new Promise((resolve, reject) => {
 
 [`examples/node/write-file.ts`](examples/node/write-file.ts) is a runnable
 version of this second case.
+
+## Compression benchmark
+
+[`examples/node/benchmark.ts`](examples/node/benchmark.ts) writes the same
+data at each compression level and reports size, wall time and peak process
+memory. Node 22, 1,000,000 rows × 5 columns (`ROWS=1000000 npm run benchmark`):
+
+| level | file size | vs. stored | time | peak RSS |
+| --- | --- | --- | --- | --- |
+| 0 (stored) | 247.6 MB | — | 3.9 s | 118 MB |
+| 1 | 38.2 MB | 15.4% | 6.9 s | 134 MB |
+| 6 (default) | 28.4 MB | 11.5% | 12.8 s | 148 MB |
+| 9 | 28.5 MB | 11.5% | 14.7 s | 153 MB |
+
+Level 9 costs 15% more time than level 6 for 0.1% less size, so 6 is the
+default. Level 1 is the option worth knowing about: a third of the time for a
+file still 6.5× smaller than stored.
+
+Peak RSS barely moves with the row count — 200,000 rows peak at 123 MB against
+1,000,000 rows at 148 MB — which is the streaming claim measured rather than
+asserted. Most of that figure is the Node baseline, not the workbook.
 
 ## TypeScript, no bundler on the main path
 
@@ -152,14 +197,12 @@ than the TypeScript sources.
 `.js` extension in both source and output and the emitted ESM in `dist/`
 loads unchanged in Node **and** straight from a `<script type="module">` in
 the browser. The one specifier a browser can't resolve on its own —
-the bare `client-zip` — is mapped by an
+the bare `fflate` — is mapped by an
 [import map](examples/browser/index.html) instead of a build step.
 
-The public surface is `src/core/index.ts`, which exports
-`createXlsxStream` plus the types callers need (`Column`, `Row`,
-`CellValue`, `MakeZip`). `MakeZip` is declared structurally, so
-`client-zip`'s `makeZip` satisfies it without `src/core` ever depending on
-that package.
+The public surface is `src/core/index.ts`, which exports `createXlsxStream`
+plus the types callers need (`Column`, `Row`, `CellValue`,
+`CompressionLevel`).
 
 ```sh
 npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundle
@@ -178,15 +221,12 @@ dist/umd/xlsx-now.umd.js   # global `xlsxNow`, also AMD- and CommonJS-aware
 
 It is produced by Rollup (`rollup.config.mjs`) from the JS `tsc` already
 emitted, so TypeScript compilation still happens in exactly one place and the
-bundler only converts module format and inlines dependencies.
+bundler only converts module format and inlines dependencies. `fflate` is
+inlined into the bundle, so a script tag needs nothing else.
 
-**`client-zip` is inlined into the UMD bundle**, and `makeZip` becomes
-optional there. That is the one deliberate difference from the ESM entry:
-`src/core` stays dependency-free and still takes `makeZip` as a parameter, but
-`client-zip` ships ESM only, so a UMD that required an injected `makeZip`
-would be unusable from a script tag. The injection point remains open — pass
-`makeZip` explicitly to use a different zip builder. The extra entry point
-lives in [`src/umd/index.ts`](src/umd/index.ts); `src/core` is untouched.
+The UMD build is a straight repackaging of `src/core/index.ts` — same exports,
+same signatures, no separate entry point and no API differences from the ESM
+path.
 
 ```html
 <script src="node_modules/xlsx-now/dist/umd/xlsx-now.umd.js"></script>
@@ -203,7 +243,8 @@ lives in [`src/umd/index.ts`](src/umd/index.ts); `src/core` is untouched.
 const { createXlsxStream } = require('xlsx-now/umd'); // CommonJS
 ```
 
-The `xlsx-now/umd` subpath is typed (`dist/src/umd/index.d.ts`) and the
+The `xlsx-now/umd` subpath is typed (it reuses `dist/src/core/index.d.ts`,
+since the exports are the same) and the
 package's `unpkg`/`jsdelivr` fields point at the bundle, so a CDN URL like
 `https://unpkg.com/xlsx-now` serves it directly. Since the package is
 `"type": "module"`, `dist/umd/package.json` marks just that directory as
@@ -238,6 +279,9 @@ npm run example:browser
 # Or run the browser example headlessly in the pre-installed Chromium
 # and save its output to out/example-browser.xlsx, for a quick sanity check
 npm run example:browser:test
+
+# Size/time/memory per compression level (ROWS=1000000 for the big run)
+npm run benchmark
 ```
 
 The static server behind every browser script (ESM and UMD alike — it serves
@@ -250,10 +294,20 @@ that function instead of spawning `node serve.js`, so there is no child
 process, no fixed `sleep` waiting for the port, and shutdown is just
 `await server.closeServer()` in a `finally`.
 
-Both examples were validated by loading the resulting files with an
-independent library (`openpyxl`, Python) and confirming: valid zip/xlsx
-structure, header row bold, PK column (`id`) filled in both the header and
-data rows, non-PK columns unstyled.
+Every generated file is checked by
+[`scripts/validate-xlsx.py`](scripts/validate-xlsx.py), which reads it back
+with libraries that know nothing about how it was written — Python's
+`zipfile` for the container and `openpyxl` for the workbook:
+
+```sh
+python3 scripts/validate-xlsx.py out/example-node.xlsx 201
+```
+
+It asserts the workbook side (header row bold, PK column `id` filled in both
+the header and the data rows, non-PK columns unstyled, expected row count) and
+the container side (every entry at ZIP version 2.0, no ZIP64 record anywhere,
+worksheet deflated, and a local header with bit 3 set and zeroed sizes, which
+is the proof it was written without knowing the row count).
 
 ## What this PoC does *not* cover yet
 
@@ -267,6 +321,11 @@ data rows, non-PK columns unstyled.
   date values as Excel serial numbers; giving date columns a real date
   `numFmt` (the same idea as the PK/header styles) is a small, natural
   follow-up, not a redesign.
-- **Compression.** `client-zip` stores files uncompressed (no `deflate`).
-  Fine for a PoC; worth benchmarking file size vs. a compressing zip
-  writer before this goes further.
+- **Confirmation in Excel itself.** The container is now shaped the way Office
+  documents it wants (ZIP 2.0, deflate), and the files read back correctly
+  under `zipfile` and `openpyxl`, but no file has been opened in a real Excel
+  installation from this environment.
+- **Archives above 4 GB.** No ZIP64 is emitted, so an entry over 4 GB
+  uncompressed would overflow silently. Unreachable in practice — Excel stops
+  at 1,048,576 rows, which is roughly 250 MB of worksheet XML — but it is a
+  real limit and not a guarded one.

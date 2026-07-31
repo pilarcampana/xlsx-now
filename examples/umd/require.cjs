@@ -1,6 +1,6 @@
 // UMD consumer, CommonJS side: a plain `require()` of the bundle — no ESM,
-// no import map, no bundler. `client-zip` is inlined in the bundle, so
-// `makeZip` doesn't have to be injected here.
+// no import map, no bundler. `fflate` is inlined in the bundle, so there is
+// nothing else to load.
 //
 // Run via `npm run example:umd:node` (which builds first).
 const { writeFile, mkdir } = require('node:fs/promises');

@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <title>xlsx-now browser PoC</title>
-<!-- Lets the compiled module keep the bare "client-zip" specifier it was
-     written with in TypeScript — no bundler involved. -->
+<!-- Resolves the one bare specifier the core imports ("fflate", the zip
+     container) without pulling in a bundler. -->
 <script type="importmap">
 {
   "imports": {
-    "client-zip": "/node_modules/client-zip/index.js"
+    "fflate": "/node_modules/fflate/esm/browser.js"
   }
 }
 </script>
