@@ -1,65 +1,61 @@
 import type { ForAwaitable, Row } from './types.js';
-import { XlsxStream, type XlsxStreamOptions } from './xlsxStream.js';
+import { XlsxWriter, type XlsxWriterOptions } from './xlsxWriter.js';
 
-export interface CreateXlsxStreamOptions extends XlsxStreamOptions {
+export interface CreateXlsxStreamOptions extends XlsxWriterOptions {
     rows: ForAwaitable<Row>;
 }
 
-/**
- * How many records are grouped into one write to the stream.
- *
- * `XlsxStream` takes batches, and awaiting one write per record costs about
- * 1.8 µs each — 1.8 s over a million rows, measured, and it does not depend
- * on the compression level. Grouping them recovers that. The batch is the
- * only thing held: a hundred-odd records, whatever the row count.
- */
-const PUMP_BATCH_ROWS = 256;
-
-/**
- * Feeds `rows` into `writable` in batches. Each `write` is awaited, so the
- * stream's backpressure reaches all the way back to the row source and memory
- * stays flat however many records are coming.
- */
-async function pump(rows: ForAwaitable<Row>, writable: WritableStream<readonly Row[]>): Promise<void> {
-    const writer = writable.getWriter();
-    try {
-        let batch: Row[] = [];
-        for await (const record of rows) {
-            batch.push(record);
-            if (batch.length >= PUMP_BATCH_ROWS) {
-                await writer.write(batch);
-                batch = [];
-            }
-        }
-        if (batch.length) await writer.write(batch);
-    } catch (err) {
-        // Errors the readable side too, so the consumer gets this failure
-        // instead of a silently truncated file.
-        await writer.abort(err);
-        return;
-    }
-    await writer.close();
+/** One iterator for both kinds of source; `await` on a sync result is free. */
+function iterate(rows: ForAwaitable<Row>): AsyncIterator<Row> | Iterator<Row> {
+    return Symbol.asyncIterator in rows
+        ? rows[Symbol.asyncIterator]()
+        : rows[Symbol.iterator]();
 }
 
 /**
- * The source form of `XlsxStream`, for callers whose rows are not already a
- * stream: an array, a generator, a database cursor. Returns the same bytes,
- * as a Web `ReadableStream<Uint8Array>` ready to be piped at a file, an HTTP
+ * The source form of the writer, for records that are not already a stream:
+ * an array, a generator, a database cursor. Returns the finished file as a
+ * Web `ReadableStream<Uint8Array>`, ready to be piped at a file, an HTTP
  * response or a `Blob`.
  *
- * `rows` accepts anything iterable, sync or async. Use `XlsxStream` directly
- * when the records already arrive as a stream and this can sit in the pipe.
+ * `rows` accepts anything iterable, sync or async. The stream pulls: records
+ * are read only when the consumer asks for more bytes, which is what keeps
+ * memory flat however many of them are coming.
  */
 export function createXlsxStream({
     rows,
     ...options
 }: CreateXlsxStreamOptions): ReadableStream<Uint8Array> {
-    const stream = new XlsxStream(options);
-    void pump(rows, stream.writable).catch(() => {
-        // There is no second place to report to: whatever went wrong has
-        // already errored the readable side (`abort` above, or a `close` that
-        // failed while finishing the file), and that is where the consumer
-        // reads it.
+    const iterator = iterate(rows);
+    let writer!: XlsxWriter;
+    let emitted = false;
+
+    return new ReadableStream<Uint8Array>({
+        start(controller) {
+            writer = new XlsxWriter((bytes) => {
+                emitted = true;
+                controller.enqueue(bytes);
+            }, options);
+        },
+
+        async pull(controller) {
+            // Read records until the writer actually produces something, so
+            // one `pull` always makes progress instead of spinning on the
+            // rows that are still accumulating into the current batch.
+            emitted = false;
+            while (!emitted) {
+                const next = await iterator.next();
+                if (next.done) {
+                    writer.finish();
+                    controller.close();
+                    return;
+                }
+                writer.writeRow(next.value);
+            }
+        },
+
+        async cancel(reason) {
+            await iterator.return?.(reason);
+        },
     });
-    return stream.readable;
 }

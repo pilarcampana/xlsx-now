@@ -31,26 +31,35 @@ and streamable) are both reused here.
 
 ## Architecture
 
-The public API is a **`TransformStream`**: batches of records go in the
-writable side, the bytes of the `.xlsx` come out the readable side. That is
-the primitive; everything else in the package is built on it.
+The public API is a **stream transform**: records go in one side, one per
+chunk, and the bytes of the `.xlsx` come out the other. It is meant to sit in
+the middle of a pipe, not at the head of one.
 
-Being a real `TransformStream` rather than a hand-rolled `{readable,
-writable}` pair is the point. The standard already wires the four paths that
-matter here, and they are exactly the ones that break silently when written by
-hand:
+At the centre is `XlsxWriter` (`xlsxWriter.ts`), which knows nothing about
+streams: `writeRow(record)`, `finish()`, and every byte handed to a sink as
+soon as it exists. Each environment wraps it in its own native stream type,
+and the wrapper is a dozen lines because the standard it wraps already does
+the work:
 
-- the row source fails → the writable aborts → the readable errors, so the
-  consumer gets the failure instead of a truncated file;
-- the destination goes away → the readable is cancelled → the writable errors,
-  so the row source stops producing;
-- the readable fills up → the writable stops being ready → backpressure
-  reaches the row source;
-- the row source closes → `flush` → the worksheet footer and the central
-  directory are written, in order.
+| face | what it is |
+| --- | --- |
+| `XlsxTransform` (`xlsx-now/node`) | a native `stream.Transform`, for `.pipe()` chains |
+| `XlsxStream` (`xlsx-now`) | a Web `TransformStream`, for `.pipeThrough()` |
+| `createXlsxStream` (`xlsx-now`) | a `ReadableStream` that *pulls* the records, for sources that aren't streams |
 
-All four are verified, not assumed. Underneath, the writer is split in two
-layers:
+Using the platform's own stream types rather than a hand-rolled pair is the
+point. The paths that matter here are the ones that break silently when
+written by hand, and each of these gets them for free:
+
+- the row source fails → the file's stream errors, so the consumer gets the
+  failure instead of a truncated file;
+- the destination goes away → the row source stops producing;
+- the output is not being read → backpressure reaches the row source;
+- the row source closes → the worksheet footer and the central directory are
+  written, in order.
+
+All four are verified, on every face, not assumed. Underneath, the writer is
+split in two layers:
 
 - **XLSX XML generation — no I/O at all.** `styles.ts` defines a small style
   registry (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.ts` turns one
@@ -74,8 +83,8 @@ environment, and ships as its own entry point:
 
 | module | contents |
 | --- | --- |
-| `xlsx-now` (`src/core`) | `XlsxStream`, `createXlsxStream`, the types — runs in both |
-| `xlsx-now/node` (`src/node`) | `createXlsxDuplex`, `writeXlsxFile`, `toNodeReadable` |
+| `xlsx-now` (`src/core`) | `XlsxWriter`, `XlsxStream`, `createXlsxStream`, the types — runs in both |
+| `xlsx-now/node` (`src/node`) | `XlsxTransform`, `writeXlsxFile`, `toNodeReadable` |
 | `xlsx-now/browser` (`src/browser`) | `downloadXlsx`, `createXlsxBlob` |
 
 ## The zip container
@@ -106,42 +115,61 @@ The previous container, `client-zip`, failed (1) and (2) — its own README says
 to generate those"*. Files produced before this change declared version 4.5
 (ZIP64) on every entry and stored the parts uncompressed.
 
-`compressionLevel` (0-9, default 6) is exposed on `XlsxStream` and
-`createXlsxStream` alike; `0` stores the parts uncompressed, which is the old
-behaviour.
+`compressionLevel` (0-9, default 6) is an option on every form of the writer;
+`0` stores the parts uncompressed, which is the old behaviour.
 
 ## Usage
 
-### The stream form: `new XlsxStream(...)`
-
-The constructor takes the static configuration — sheet name, columns,
-compression — and the writer then sits in the pipe:
+Every form takes the same static configuration in its constructor — columns,
+sheet name, compression — and then receives the records. `columns` is the only
+required option.
 
 ```js
-import { XlsxStream } from 'xlsx-now';
-
 const columns = [
     { name: 'id', key: 'id', pk: true },
     { name: 'name', key: 'name' },
     { name: 'price', key: 'price' },
 ];
+```
 
-await rowBatches                                   // ReadableStream<Row[]>
+### Node: `new XlsxTransform(...)` in a pipe chain
+
+A native `stream.Transform`, so it drops into an ordinary `.pipe()` chain
+between whatever produces the records and wherever the file has to go. Its
+writable side is in object mode and takes one record per chunk, which is what
+a line splitter plus a JSON parser upstream already produce:
+
+```js
+import { createReadStream, createWriteStream } from 'node:fs';
+import { XlsxTransform } from 'xlsx-now/node';
+
+createReadStream('widgets.ndjson')
+    .pipe(new LineSplitter({}))
+    .pipe(new JsonParserTransformer())
+    .pipe(new XlsxTransform({ columns, sheetName: 'Widgets' }))
+    .pipe(createWriteStream('widgets.xlsx'));
+```
+
+[`examples/node/write-file.ts`](examples/node/write-file.ts) is a runnable
+version, using `pipeline` so a failure anywhere in the chain surfaces.
+
+### Browser: `new XlsxStream(...)` in a pipe chain
+
+The same writer as a Web `TransformStream`, one record per chunk:
+
+```js
+import { XlsxStream } from 'xlsx-now';
+
+await rows                                         // ReadableStream<Row>
     .pipeThrough(new XlsxStream({ columns, sheetName: 'Widgets' }))
     .pipeTo(destination);                          // WritableStream<Uint8Array>
 ```
 
-Chunks are `Row[]`, not single records, because that is the shape row sources
-actually have — a database cursor hands over a page at a time, an NDJSON
-reader a buffer's worth. It is one type rather than two: a source that
-produces one row at a time writes `[row]`.
+### Records that are not a stream: `createXlsxStream(...)`
 
-### The source form: `createXlsxStream(...)`
-
-When the records are *not* already a stream — an array, a generator, a cursor
-— `createXlsxStream` takes them directly and returns the finished
-`ReadableStream<Uint8Array>`. `rows` accepts anything iterable, sync or async,
-one record at a time; the batching into the transform happens inside.
+An array, a generator, a database cursor. `rows` accepts anything iterable,
+sync or async, and the result is the finished file as a
+`ReadableStream<Uint8Array>`:
 
 ```js
 import { createXlsxStream } from 'xlsx-now';
@@ -156,43 +184,10 @@ const xlsxStream = createXlsxStream({
 });
 ```
 
-Each `write` is awaited, so backpressure still reaches the source: memory
-stays flat even for a data set still being received.
-
-### Node
-
-`xlsx-now/node` puts the writer in a Node pipe chain and covers the
-straight-to-a-file case:
-
-```js
-import { createWriteStream } from 'node:fs';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import { createXlsxDuplex, writeXlsxFile } from 'xlsx-now/node';
-
-async function* fetchRowBatches() {
-    // e.g. a DB cursor page, or a chunk of an NDJSON response
-    for (let start = 1; start <= 100_000; start += 500) {
-        yield Array.from({ length: 500 }, (_, k) => ({
-            id: start + k,
-            name: `Widget ${start + k}`,
-            price: (start + k) * 3.33,
-        }));
-    }
-}
-
-await pipeline(
-    Readable.from(fetchRowBatches()),
-    createXlsxDuplex({ columns, sheetName: 'Widgets' }),
-    createWriteStream('widgets.xlsx'),
-);
-
-// Or, for records that are not already a stream:
-await writeXlsxFile('widgets.xlsx', { columns, rows, sheetName: 'Widgets' });
-```
-
-[`examples/node/write-file.ts`](examples/node/write-file.ts) is a runnable
-version of the pipe chain.
+This one pulls: a record is read only when the consumer asks for more bytes,
+so memory stays flat even for a data set still being received. In Node,
+`writeXlsxFile(path, options)` from `xlsx-now/node` takes the same options and
+writes the file in one call.
 
 ### Browser
 
@@ -253,10 +248,10 @@ the browser. The one specifier a browser can't resolve on its own —
 the bare `fflate` — is mapped by an
 [import map](examples/browser/index.html) instead of a build step.
 
-The public surface is `src/core/index.ts`, which exports `XlsxStream` and
-`createXlsxStream` plus the types callers need (`Column`, `Row`, `CellValue`,
-`CompressionLevel`), with the environment-specific helpers under
-`src/node/index.ts` and `src/browser/index.ts`.
+The public surface is `src/core/index.ts`, which exports `XlsxWriter`,
+`XlsxStream` and `createXlsxStream` plus the types callers need (`Column`,
+`Row`, `CellValue`, `CompressionLevel`), with the environment-specific faces
+under `src/node/index.ts` and `src/browser/index.ts`.
 
 ```sh
 npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundle
