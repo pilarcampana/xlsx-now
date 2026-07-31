@@ -1,22 +1,28 @@
 import { cellRef, cellXml } from './cell.js';
-import { STYLE } from './styles.js';
+import { STYLE, type StyleIndex } from './styles.js';
+import type { CellValue, Column, ForAwaitable, Row } from './types.js';
 
 const SHEET_HEADER =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
 const SHEET_FOOTER = '</sheetData></worksheet>';
 
-function styleFor(isHeaderRow, isPkColumn) {
+function styleFor(isHeaderRow: boolean, isPkColumn: boolean): StyleIndex {
     if (isHeaderRow && isPkColumn) return STYLE.PK_HEADER;
     if (isHeaderRow) return STYLE.HEADER;
     if (isPkColumn) return STYLE.PK;
     return STYLE.DEFAULT;
 }
 
-function rowXml(rowNumber, values, columns, isHeaderRow) {
+function rowXml(
+    rowNumber: number,
+    values: readonly CellValue[],
+    columns: readonly Column[],
+    isHeaderRow: boolean,
+): string {
     let cells = '';
     for (let i = 0; i < columns.length; i++) {
-        const style = styleFor(isHeaderRow, Boolean(columns[i].pk));
+        const style = styleFor(isHeaderRow, Boolean(columns[i]!.pk));
         cells += cellXml(values[i], cellRef(i, rowNumber), style);
     }
     return `<row r="${rowNumber}">${cells}</row>`;
@@ -24,7 +30,10 @@ function rowXml(rowNumber, values, columns, isHeaderRow) {
 
 // Streams the worksheet XML: header, then one <row> per incoming record,
 // emitted as soon as each record arrives — nothing is buffered in full.
-export async function* sheetXmlChunks(columns, rows) {
+export async function* sheetXmlChunks(
+    columns: readonly Column[],
+    rows: ForAwaitable<Row>,
+): AsyncGenerator<string, void, undefined> {
     yield SHEET_HEADER;
     yield rowXml(
         1,

@@ -1,40 +1,49 @@
 {
   "name": "xlsx-now",
-  "version": "0.1.0",
-  "description": "Streaming XLSX writer with cell styles (bold headers, highlighted PK columns), for Node and the browser",
+  "version": "0.0.1",
+  "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with styles (bold headers, PK columns)",
   "type": "module",
   "license": "MIT",
-  "main": "./src/index.js",
   "exports": {
-    ".": "./src/index.js",
-    "./core": "./src/core/createXlsxStream.js"
+    ".": {
+      "types": "./dist/src/core/index.d.ts",
+      "default": "./dist/src/core/index.js"
+    },
+    "./umd": {
+      "types": "./dist/src/umd/index.d.ts",
+      "default": "./dist/umd/xlsx-now.umd.js"
+    },
+    "./dist/umd/xlsx-now.umd.js": "./dist/umd/xlsx-now.umd.js",
+    "./package.json": "./package.json"
   },
+  "types": "./dist/src/core/index.d.ts",
+  "unpkg": "./dist/umd/xlsx-now.umd.js",
+  "jsdelivr": "./dist/umd/xlsx-now.umd.js",
   "files": [
+    "dist/src",
+    "dist/umd",
     "src"
   ],
-  "keywords": [
-    "xlsx",
-    "excel",
-    "stream",
-    "streaming",
-    "styles",
-    "browser",
-    "spreadsheet"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/pilarcampana/xlsx-now.git"
-  },
   "scripts": {
-    "example:node": "node examples/node/write-file.mjs",
-    "example:browser": "node examples/browser/serve.mjs",
-    "example:browser:test": "node examples/browser/run-in-chromium-test.mjs"
+    "build": "tsc && npm run build:umd",
+    "build:umd": "rollup -c",
+    "typecheck": "tsc --noEmit",
+    "example:node": "npm run build && node dist/examples/node/write-file.js",
+    "example:browser": "npm run build && node dist/examples/browser/serve.js",
+    "example:browser:test": "npm run build && node dist/examples/browser/run-in-chromium-test.js",
+    "example:umd:node": "npm run build && node examples/umd/require.cjs",
+    "example:umd:browser": "npm run build && node dist/examples/browser/serve.js",
+    "example:umd:browser:test": "npm run build && PAGE_PATH=/examples/umd/index.html OUT_FILE=out/example-umd-browser.xlsx node dist/examples/browser/run-in-chromium-test.js"
   },
   "dependencies": {
     "client-zip": "^2.4.6"
   },
   "devDependencies": {
-    "playwright-core": "^1.62.0"
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@types/node": "^26.1.2",
+    "playwright-core": "^1.62.0",
+    "rollup": "^4.62.3",
+    "server4test": "^1.0.0",
+    "typescript": "^5.9.3"
   }
 }
-

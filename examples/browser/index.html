@@ -2,15 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>xlsx-now browser example</title>
-</head>
-<body>
-<h1>xlsx-now — browser example</h1>
-<p>Generates a styled .xlsx (bold headers, highlighted PK column) client-side from a simulated streaming data source.</p>
-<button id="generate">Generate &amp; download</button>
-<p id="status"></p>
-<!-- Resolves the bare "client-zip" specifier used inside src/index.js.
-     A bundler would normally handle this; this demo runs without one. -->
+<title>xlsx-now browser PoC</title>
+<!-- Lets the compiled module keep the bare "client-zip" specifier it was
+     written with in TypeScript — no bundler involved. -->
 <script type="importmap">
 {
   "imports": {
@@ -18,6 +12,12 @@
   }
 }
 </script>
-<script type="module" src="/examples/browser/app.js"></script>
+</head>
+<body>
+<h1>xlsx-now — browser PoC</h1>
+<p>Generates a styled .xlsx (bold headers, highlighted PK column) client-side from a simulated streaming data source.</p>
+<button id="generate">Generate &amp; download</button>
+<p id="status"></p>
+<script type="module" src="/dist/examples/browser/app.js"></script>
 </body>
 </html>
