@@ -252,8 +252,9 @@ package's `unpkg`/`jsdelivr` fields point at the bundle, so a CDN URL like
 browsers serve happily while `require()` still parses it as CommonJS.
 
 Verified on all three consumption paths (global via script tag, AMD `define`,
-and `require()`), and the resulting files pass the same `openpyxl` validation
-as the ESM output — bold headers, filled PK column, 200 data rows.
+and `require()`), and the resulting files pass the same
+[validation](#try-it) as the ESM output — bold headers, filled PK column,
+200 data rows.
 
 ```sh
 npm run example:umd:node          # require() the bundle -> out/example-umd-node.xlsx
@@ -295,19 +296,28 @@ process, no fixed `sleep` waiting for the port, and shutdown is just
 `await server.closeServer()` in a `finally`.
 
 Every generated file is checked by
-[`scripts/validate-xlsx.py`](scripts/validate-xlsx.py), which reads it back
-with libraries that know nothing about how it was written — Python's
-`zipfile` for the container and `openpyxl` for the workbook:
+[`scripts/validate-xlsx.ts`](scripts/validate-xlsx.ts):
 
 ```sh
-python3 scripts/validate-xlsx.py out/example-node.xlsx 201
+npm run validate -- out/example-node.xlsx 201
 ```
+
+It reads the file back with implementations that had nothing to do with
+writing it — [`yauzl`](https://github.com/thejoshwolfe/yauzl) plus Node's own
+`zlib` for the container, [`exceljs`](https://github.com/exceljs/exceljs) for
+the workbook. Validating with `fflate` would only prove that the writer agrees
+with itself.
 
 It asserts the workbook side (header row bold, PK column `id` filled in both
 the header and the data rows, non-PK columns unstyled, expected row count) and
-the container side (every entry at ZIP version 2.0, no ZIP64 record anywhere,
-worksheet deflated, and a local header with bit 3 set and zeroed sizes, which
-is the proof it was written without knowing the row count).
+the container side (every entry at ZIP version 2.0, no ZIP64 record, worksheet
+deflated, CRC recomputed from the inflated bytes, and a local header with bit
+3 set and zeroed sizes — the proof it was written without knowing the row
+count).
+
+The checks were confirmed to bite, not just pass: a file written with
+`compressionLevel: 0` fails on the deflate check, a wrong expected row count
+fails, and flipping one byte of compressed data fails on inflation.
 
 ## What this PoC does *not* cover yet
 
@@ -323,7 +333,7 @@ is the proof it was written without knowing the row count).
   follow-up, not a redesign.
 - **Confirmation in Excel itself.** The container is now shaped the way Office
   documents it wants (ZIP 2.0, deflate), and the files read back correctly
-  under `zipfile` and `openpyxl`, but no file has been opened in a real Excel
+  under `yauzl` and `exceljs`, but no file has been opened in a real Excel
   installation from this environment.
 - **Archives above 4 GB.** No ZIP64 is emitted, so an entry over 4 GB
   uncompressed would overflow silently. Unreachable in practice — Excel stops
