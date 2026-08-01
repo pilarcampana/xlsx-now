@@ -1,8 +1,8 @@
 # xlsx-now
 
 XLSX fast outputs — a streaming XLSX writer with real cell styles (bold
-headers, highlighted primary-key columns), designed to run **unmodified in
-Node and in the browser**.
+headers, highlighted primary-key columns) and a frozen header row, designed to
+run **unmodified in Node and in the browser**.
 
 ## Why not just fork `xlsx-write-stream`?
 
@@ -138,6 +138,25 @@ const columns = [
     { name: 'price', key: 'price' },
 ];
 ```
+
+Each column is `name` (the header text), `key` (the property read from every
+record, defaulting to `name`) and `pk`, which marks it as a primary key: pk
+columns get the highlight fill, and they are also what the sheet freezes.
+
+### Frozen header and pk columns
+
+The header row is always frozen, so it stays on screen as the sheet scrolls,
+and so are the pk columns — but only while they are the sheet's first
+columns. With `columns` as above, `id` is column A and the file opens with row
+1 and column A fixed; two leading pks freeze two columns, and so on.
+
+A freeze is a single split at one position, so a pk sitting after an ordinary
+column can't be frozen without dragging every column before it along. When the
+pks are mixed in among the rest, only the header row is frozen. Same when
+*every* column is a pk: freezing all of them would leave nothing to scroll.
+
+Nothing to configure: it follows from `pk` and the column order, and it costs
+one `<pane>` element at the top of the worksheet, before the first row.
 
 ### `new XlsxStream(...)` in a pipe chain
 
@@ -325,7 +344,7 @@ browsers serve happily while `require()` still parses it as CommonJS.
 Verified on all three consumption paths (global via script tag, AMD `define`,
 and `require()`), and the resulting files pass the same
 [validation](#try-it) as the ESM output — bold headers, filled PK column,
-200 data rows.
+frozen header row and PK column, 200 data rows.
 
 ```sh
 npm run example:umd:node          # require() the bundle -> out/example-umd-node.xlsx
@@ -380,15 +399,21 @@ the workbook. Validating with `fflate` would only prove that the writer agrees
 with itself.
 
 It asserts the workbook side (header row bold, PK column `id` filled in both
-the header and the data rows, non-PK columns unstyled, expected row count) and
-the container side (every entry at ZIP version 2.0, no ZIP64 record, worksheet
+the header and the data rows, non-PK columns unstyled, the header row and the
+leading PK columns frozen, expected row count) and the container side (every entry at ZIP version 2.0, no ZIP64 record, worksheet
 deflated, CRC recomputed from the inflated bytes, and a local header with bit
 3 set and zeroed sizes — the proof it was written without knowing the row
 count).
 
+Which columns are frozen is *not* read from the writer's configuration: the
+validator counts the leading filled (PK) columns in the header it read back,
+and requires the pane to match.
+
 The checks were confirmed to bite, not just pass: a file written with
 `compressionLevel: 0` fails on the deflate check, a wrong expected row count
-fails, and flipping one byte of compressed data fails on inflation.
+fails, flipping one byte of compressed data fails on inflation, and a
+worksheet written without its `<pane>` — or with the wrong number of frozen
+columns — fails the freeze check.
 
 ## What this PoC does *not* cover yet
 
