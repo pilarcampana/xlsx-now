@@ -31,24 +31,68 @@ and streamable) are both reused here.
 
 ## Architecture
 
-The writer is split in two layers:
+The public API is a **stream transform**: records go in one side, one per
+chunk, and the bytes of the `.xlsx` come out the other. It is meant to sit in
+the middle of a pipe, not at the head of one.
+
+It is **Web Streams throughout**, in Node as much as in the browser. Node has
+had `ReadableStream`, `WritableStream` and `TransformStream` as globals since
+v18, so there is no Node-flavoured variant of the writer to keep in step —
+one class, one behaviour, both environments:
+
+| export | what it is |
+| --- | --- |
+| `XlsxStream` | a `TransformStream<Row, Uint8Array>`, for `.pipeThrough()` |
+| `createXlsxStream` | a `ReadableStream` that *pulls* the records, for sources that aren't streams |
+| `XlsxWriter` | the engine under both: `writeRow(record)`, `finish()`, no streams at all |
+
+`XlsxWriter` knows nothing about streams — every byte goes to a sink as soon
+as it exists — and the two stream faces are a dozen lines each, because the
+standard already does the work.
+
+Leaning on the standard rather than a hand-rolled pair is the point. The paths
+that matter here are the ones that break silently when written by hand, and
+they come for free:
+
+- the row source fails → the file's stream errors, so the consumer gets the
+  failure instead of a truncated file;
+- the destination goes away → the row source stops producing;
+- the output is not being read → backpressure reaches the row source;
+- the row source closes → the worksheet footer and the central directory are
+  written, in order.
+
+All four are verified, on every face, not assumed. Underneath, the writer is
+split in two layers:
 
 - **XLSX XML generation — no I/O at all.** `styles.ts` defines a small style
-  registry (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.ts` streams one
-  `<row>` at a time from an `AsyncIterable` of records — nothing is buffered.
-  It's just string generation, which is half of what makes this isomorphic.
+  registry (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.ts` turns one
+  record into one `<row>` — plain synchronous string functions, nothing
+  buffered. It's just string generation, which is half of what makes this
+  isomorphic.
 - **The zip container — `fflate`, wrapped in `zip.ts`.** See
   [The zip container](#the-zip-container) for why that library. `zip.ts` is a
-  thin adapter, not a zip implementation: `fflate` reports its output through
-  a callback, and the public API here is a Web `ReadableStream`, so the
-  adapter bridges the two and makes backpressure reach back to the row source.
-  Every byte of the archive format — local headers, CRCs, data descriptors,
-  central directory — is written by `fflate`.
+  thin adapter, not a zip implementation: `ZipWriter` takes bytes in and hands
+  whatever `fflate` produces straight to a sink. Both sides are push-based, so
+  there is no queue in between. Every byte of the archive format — local
+  headers, CRCs, data descriptors, central directory — is written by `fflate`.
 
 Both halves are pure JS with no `fs`, `zlib` or DOM anywhere, which is what
 proves the isomorphism claim: the same `src/core` files, byte-for-byte, ran in
 Node and in real Chromium and produced structurally equivalent, valid `.xlsx`
 files (see verification below).
+
+Anything that *can't* be isomorphic lives outside `core`, one folder per
+environment, and ships as its own entry point:
+
+| module | contents |
+| --- | --- |
+| `xlsx-now` (`src/core`) | `XlsxStream`, `createXlsxStream`, `XlsxWriter`, the types — runs in both |
+| `xlsx-now/node` (`src/node`) | `createFileWritable`, `writeXlsxFile` |
+| `xlsx-now/browser` (`src/browser`) | `downloadXlsx`, `createXlsxBlob` |
+
+Neither of those two contains a writer: they only supply the *destination*
+the standard has no answer for on that platform — a file on Node, the save
+dialog or a `Blob` in the browser.
 
 ## The zip container
 
@@ -78,89 +122,111 @@ The previous container, `client-zip`, failed (1) and (2) — its own README says
 to generate those"*. Files produced before this change declared version 4.5
 (ZIP64) on every entry and stored the parts uncompressed.
 
-`compressionLevel` (0-9, default 6) is exposed on `createXlsxStream`; `0`
-stores the parts uncompressed, which is the old behaviour.
+`compressionLevel` (0-9, default 6) is an option on every form of the writer;
+`0` stores the parts uncompressed, which is the old behaviour.
 
-## Node usage
+## Usage
 
-`createXlsxStream({ columns, rows, sheetName })` returns a Web
-`ReadableStream<Uint8Array>`. In Node, convert it to a Node stream with
-`Readable.fromWeb` and pipe it wherever you like — a file, an HTTP
-response, etc.
-
-`rows` accepts anything iterable, sync or async, so the same call covers
-both a plain in-memory array and a live async iterator.
-
-### Writing an array of data to a file
+Every form takes the same static configuration in its constructor — columns,
+sheet name, compression — and then receives the records. `columns` is the only
+required option.
 
 ```js
-import { createWriteStream } from 'node:fs';
-import { Readable } from 'node:stream';
-import { createXlsxStream } from 'xlsx-now';
-
 const columns = [
     { name: 'id', key: 'id', pk: true },
     { name: 'name', key: 'name' },
     { name: 'price', key: 'price' },
 ];
+```
 
-const rows = [
-    { id: 1, name: 'Widget 1', price: 3.33 },
-    { id: 2, name: 'Widget 2', price: 6.66 },
-    { id: 3, name: 'Widget 3', price: 9.99 },
-];
+### `new XlsxStream(...)` in a pipe chain
 
-const xlsxStream = createXlsxStream({ columns, rows, sheetName: 'Widgets' });
+A `TransformStream<Row, Uint8Array>`: one record per chunk in, the file's
+bytes out.
 
-await new Promise((resolve, reject) => {
-    Readable.fromWeb(xlsxStream)
-        .pipe(createWriteStream('widgets.xlsx'))
-        .on('finish', resolve)
-        .on('error', reject);
+```js
+import { XlsxStream } from 'xlsx-now';
+
+await rows                                         // ReadableStream<Row>
+    .pipeThrough(new XlsxStream({ columns, sheetName: 'Widgets' }))
+    .pipeTo(destination);                          // WritableStream<Uint8Array>
+```
+
+The same call in Node, with an NDJSON file at one end and an `.xlsx` at the
+other. Every link is a `TransformStream`, so the chain itself is portable —
+only the two ends are platform-specific:
+
+```js
+import { openAsBlob } from 'node:fs';
+import { XlsxStream } from 'xlsx-now';
+import { createFileWritable } from 'xlsx-now/node';
+
+await (await openAsBlob('widgets.ndjson')).stream()
+    .pipeThrough(new TextDecoderStream())
+    .pipeThrough(new LineSplitStream())            // ~10 lines, see the example
+    .pipeThrough(new JsonParseStream())
+    .pipeThrough(new XlsxStream({ columns, sheetName: 'Widgets' }))
+    .pipeTo(createFileWritable('widgets.xlsx'));
+```
+
+[`examples/node/write-file.ts`](examples/node/write-file.ts) is exactly this,
+runnable, splitter and parser included.
+
+### Records that are not a stream: `createXlsxStream(...)`
+
+An array, a generator, a database cursor. `rows` accepts anything iterable,
+sync or async, and the result is the finished file as a
+`ReadableStream<Uint8Array>`:
+
+```js
+import { createXlsxStream } from 'xlsx-now';
+
+const xlsxStream = createXlsxStream({
+    columns,
+    rows: [
+        { id: 1, name: 'Widget 1', price: 3.33 },
+        { id: 2, name: 'Widget 2', price: 6.66 },
+    ],
+    sheetName: 'Widgets',
 });
 ```
 
-### Writing an async iterator to a file
+This one pulls: a record is read only when the consumer asks for more bytes,
+so memory stays flat even for a data set still being received. In Node,
+`writeXlsxFile(path, options)` from `xlsx-now/node` takes the same options and
+writes the file in one call.
 
-Same call, but `rows` is an async generator instead of an array. Each
-record becomes a `<row>` and is written out as soon as it arrives, so
-memory stays flat even for a data set still being received — a database
-cursor, or an NDJSON response from another service.
+### A note on `createFileWritable`
+
+Node has no native web-stream writer to a file, so `xlsx-now/node` bridges
+`fs.WriteStream` — the only Node stream anywhere in the package. It does
+**not** use Node's own `Writable.toWeb` for that, because it does not carry
+the file's backpressure tightly enough: writing a million rows uncompressed
+(247 MB, where the writer outruns the disk by the widest margin) peaks at
+348 MB of RSS through `Writable.toWeb`, against 111 MB straight into a web
+sink. Waiting on `drain`, which is the whole of the difference, brings it back
+to 109 MB.
+
+### Browser
+
+`xlsx-now/browser` saves the generated file, streaming straight to disk
+through the File System Access API where it exists and falling back to a
+`Blob` download where it does not. The return value says which of the two ran.
 
 ```js
-import { createWriteStream } from 'node:fs';
-import { Readable } from 'node:stream';
-import { createXlsxStream } from 'xlsx-now';
+import { downloadXlsx } from 'xlsx-now/browser';
 
-const columns = [
-    { name: 'id', key: 'id', pk: true },
-    { name: 'name', key: 'name' },
-    { name: 'price', key: 'price' },
-];
-
-async function* fetchRowsFromUpstream() {
-    // e.g. a DB cursor, or `for await (const line of ndjsonResponse.body)`
-    for (let i = 1; i <= 100_000; i++) {
-        yield { id: i, name: `Widget ${i}`, price: Math.round(i * 3.33 * 100) / 100 };
-    }
-}
-
-const xlsxStream = createXlsxStream({
+const route = await downloadXlsx('widgets.xlsx', {
     columns,
     rows: fetchRowsFromUpstream(),
     sheetName: 'Widgets',
 });
-
-await new Promise((resolve, reject) => {
-    Readable.fromWeb(xlsxStream)
-        .pipe(createWriteStream('widgets.xlsx'))
-        .on('finish', resolve)
-        .on('error', reject);
-});
+// route === 'file-system-access' | 'blob'
 ```
 
-[`examples/node/write-file.ts`](examples/node/write-file.ts) is a runnable
-version of this second case.
+It has to be called from a user gesture, since the File System Access API
+opens a native save dialog. `createXlsxBlob(options)` is there for when the
+`Blob` itself is what's wanted.
 
 ## Compression benchmark
 
@@ -200,9 +266,10 @@ the browser. The one specifier a browser can't resolve on its own —
 the bare `fflate` — is mapped by an
 [import map](examples/browser/index.html) instead of a build step.
 
-The public surface is `src/core/index.ts`, which exports `createXlsxStream`
-plus the types callers need (`Column`, `Row`, `CellValue`,
-`CompressionLevel`).
+The public surface is `src/core/index.ts`, which exports `XlsxWriter`,
+`XlsxStream` and `createXlsxStream` plus the types callers need (`Column`,
+`Row`, `CellValue`, `CompressionLevel`), with the environment-specific faces
+under `src/node/index.ts` and `src/browser/index.ts`.
 
 ```sh
 npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundle

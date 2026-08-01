@@ -1,14 +1,14 @@
 // Browser-side proof: byte-for-byte the same core module as the Node example,
-// called exactly the same way. The bare "fflate" specifier that the core
-// imports is resolved in the browser by the import map in index.html.
-import { createXlsxStream } from '../../src/core/createXlsxStream.js';
+// reached here through the browser-only helpers in src/browser. The bare
+// "fflate" specifier that the core imports is resolved in the browser by the
+// import map in index.html.
+import { createXlsxBlob, downloadXlsx } from '../../src/browser/index.js';
 import type { Column, Row } from '../../src/core/types.js';
 
 declare global {
     interface Window {
         /** Exposed for automated testing (see run-in-chromium-test.ts). */
         __generateXlsxBlob?: (rowCount?: number) => Promise<Blob>;
-        showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<FileSystemFileHandle>;
     }
 }
 
@@ -28,48 +28,29 @@ async function* simulateUpstreamRows(count: number): AsyncGenerator<Row> {
     }
 }
 
-async function generateXlsxBlob(rowCount = 200): Promise<Blob> {
-    const webStream = createXlsxStream({
+function generateXlsxBlob(rowCount = 200): Promise<Blob> {
+    return createXlsxBlob({
         columns,
         rows: simulateUpstreamRows(rowCount),
         sheetName: 'Widgets',
     });
-    // Response is a convenient built-in ReadableStream -> Blob adapter.
-    return new Response(webStream).blob();
 }
 
 async function generateAndDownload(): Promise<void> {
     const status = document.getElementById('status')!;
+    status.textContent = 'Generating...';
 
-    // Best case: File System Access API streams straight to disk, so the
-    // download genuinely starts before generation finishes and nothing is
-    // held in memory as one big Blob.
-    if (window.showSaveFilePicker) {
-        status.textContent = 'Streaming directly to disk via File System Access API...';
-        const handle = await window.showSaveFilePicker({ suggestedName: 'example-browser.xlsx' });
-        const writable = await handle.createWritable();
-        const webStream = createXlsxStream({
-            columns,
-            rows: simulateUpstreamRows(200),
-            sheetName: 'Widgets',
-        });
-        await webStream.pipeTo(writable);
-        status.textContent = 'Done (streamed to disk).';
-        return;
-    }
+    // `downloadXlsx` streams straight to disk through the File System Access
+    // API when the browser has it (nothing held in memory as one big Blob),
+    // and falls back to a Blob download where it does not.
+    const route = await downloadXlsx('example-browser.xlsx', {
+        columns,
+        rows: simulateUpstreamRows(200),
+        sheetName: 'Widgets',
+    });
 
-    // Fallback for browsers without the File System Access API (Firefox,
-    // Safari): still generated incrementally, but materializes as a Blob
-    // before the browser's normal download flow can start.
-    status.textContent = 'File System Access API unavailable, falling back to Blob download...';
-    const blob = await generateXlsxBlob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'example-browser.xlsx';
-    a.click();
-    URL.revokeObjectURL(url);
-    status.textContent = 'Done (Blob fallback).';
+    status.textContent =
+        route === 'file-system-access' ? 'Done (streamed to disk).' : 'Done (Blob fallback).';
 }
 
 document.getElementById('generate')!.addEventListener('click', () => {

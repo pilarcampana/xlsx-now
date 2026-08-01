@@ -3,11 +3,9 @@
 // enough that buffering the workbook would be visible.
 //
 // Run via `npm run benchmark` (optionally `ROWS=1000000 npm run benchmark`).
-import { createWriteStream } from 'node:fs';
 import { mkdir, stat, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { Readable } from 'node:stream';
-import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
+import { createFileWritable } from '../../src/node/index.js';
 import { createXlsxStream } from '../../src/core/createXlsxStream.js';
 import type { CompressionLevel } from '../../src/core/zip.js';
 import type { Column, Row } from '../../src/core/types.js';
@@ -58,12 +56,7 @@ async function run(level: CompressionLevel): Promise<Result> {
         compressionLevel: level,
     });
 
-    await new Promise<void>((resolvePromise, reject) => {
-        Readable.fromWeb(webStream as NodeWebReadableStream<Uint8Array>)
-            .pipe(createWriteStream(outPath))
-            .on('finish', resolvePromise)
-            .on('error', reject);
-    });
+    await webStream.pipeTo(createFileWritable(outPath));
     const seconds = (performance.now() - started) / 1000;
     clearInterval(sampler);
 

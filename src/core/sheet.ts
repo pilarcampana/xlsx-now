@@ -1,11 +1,14 @@
 import { cellRef, cellXml } from './cell.js';
 import { STYLE, type StyleIndex } from './styles.js';
-import type { CellValue, Column, ForAwaitable, Row } from './types.js';
+import type { CellValue, Column, Row } from './types.js';
 
-const SHEET_HEADER =
+export const SHEET_HEADER =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
-const SHEET_FOOTER = '</sheetData></worksheet>';
+export const SHEET_FOOTER = '</sheetData></worksheet>';
+
+/** The worksheet's first row is the header, so data records start here. */
+export const FIRST_DATA_ROW = 2;
 
 function styleFor(isHeaderRow: boolean, isPkColumn: boolean): StyleIndex {
     if (isHeaderRow && isPkColumn) return STYLE.PK_HEADER;
@@ -28,26 +31,26 @@ function rowXml(
     return `<row r="${rowNumber}">${cells}</row>`;
 }
 
-// Streams the worksheet XML: header, then one <row> per incoming record,
-// emitted as soon as each record arrives — nothing is buffered in full.
-export async function* sheetXmlChunks(
-    columns: readonly Column[],
-    rows: ForAwaitable<Row>,
-): AsyncGenerator<string, void, undefined> {
-    yield SHEET_HEADER;
-    yield rowXml(
+/** Row 1: the column names, in the header style. */
+export function headerRowXml(columns: readonly Column[]): string {
+    return rowXml(
         1,
         columns.map((c) => c.name),
         columns,
         true,
     );
+}
 
-    let rowNumber = 2;
-    for await (const record of rows) {
-        const values = columns.map((c) => record[c.key ?? c.name]);
-        yield rowXml(rowNumber, values, columns, false);
-        rowNumber++;
-    }
-
-    yield SHEET_FOOTER;
+/** One `<row>` for an incoming record, reading each column by its key. */
+export function dataRowXml(
+    rowNumber: number,
+    record: Row,
+    columns: readonly Column[],
+): string {
+    return rowXml(
+        rowNumber,
+        columns.map((c) => record[c.key ?? c.name]),
+        columns,
+        false,
+    );
 }

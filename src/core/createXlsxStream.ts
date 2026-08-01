@@ -1,42 +1,61 @@
-import { contentTypesXml, rootRelsXml, workbookRelsXml, workbookXml } from './parts.js';
-import { sheetXmlChunks } from './sheet.js';
-import { stylesXml } from './styles.js';
-import type { Column, ForAwaitable, Row, ZipEntry } from './types.js';
-import { createZipStream, DEFAULT_COMPRESSION_LEVEL, type CompressionLevel } from './zip.js';
+import type { ForAwaitable, Row } from './types.js';
+import { XlsxWriter, type XlsxWriterOptions } from './xlsxWriter.js';
 
-export interface CreateXlsxStreamOptions {
-    columns: readonly Column[];
+export interface CreateXlsxStreamOptions extends XlsxWriterOptions {
     rows: ForAwaitable<Row>;
-    sheetName?: string;
-    /**
-     * Deflate effort, 0-9. Defaults to 6; `0` writes the parts uncompressed,
-     * which is faster but leaves the file roughly ten times bigger.
-     */
-    compressionLevel?: CompressionLevel;
+}
+
+/** One iterator for both kinds of source; `await` on a sync result is free. */
+function iterate(rows: ForAwaitable<Row>): AsyncIterator<Row> | Iterator<Row> {
+    return Symbol.asyncIterator in rows
+        ? rows[Symbol.asyncIterator]()
+        : rows[Symbol.iterator]();
 }
 
 /**
- * Builds a styled .xlsx as a Web ReadableStream<Uint8Array>, without ever
- * holding the full workbook (or the full row set) in memory.
+ * The source form of the writer, for records that are not already a stream:
+ * an array, a generator, a database cursor. Returns the finished file as a
+ * Web `ReadableStream<Uint8Array>`, ready to be piped at a file, an HTTP
+ * response or a `Blob`.
  *
- * The same module runs unmodified in Node and in the browser: the XML is
- * plain string generation and the zip container underneath is pure JS
- * (`fflate`), so nothing here touches `fs`, `zlib` or the DOM.
+ * `rows` accepts anything iterable, sync or async. The stream pulls: records
+ * are read only when the consumer asks for more bytes, which is what keeps
+ * memory flat however many of them are coming.
  */
 export function createXlsxStream({
-    columns,
     rows,
-    sheetName = 'Sheet1',
-    compressionLevel = DEFAULT_COMPRESSION_LEVEL,
+    ...options
 }: CreateXlsxStreamOptions): ReadableStream<Uint8Array> {
-    const files: ZipEntry[] = [
-        { name: '[Content_Types].xml', input: contentTypesXml() },
-        { name: '_rels/.rels', input: rootRelsXml() },
-        { name: 'xl/workbook.xml', input: workbookXml(sheetName) },
-        { name: 'xl/styles.xml', input: stylesXml() },
-        { name: 'xl/_rels/workbook.xml.rels', input: workbookRelsXml() },
-        { name: 'xl/worksheets/sheet1.xml', input: sheetXmlChunks(columns, rows) },
-    ];
+    const iterator = iterate(rows);
+    let writer!: XlsxWriter;
+    let emitted = false;
 
-    return createZipStream(files, compressionLevel);
+    return new ReadableStream<Uint8Array>({
+        start(controller) {
+            writer = new XlsxWriter((bytes) => {
+                emitted = true;
+                controller.enqueue(bytes);
+            }, options);
+        },
+
+        async pull(controller) {
+            // Read records until the writer actually produces something, so
+            // one `pull` always makes progress instead of spinning on the
+            // rows that are still accumulating into the current batch.
+            emitted = false;
+            while (!emitted) {
+                const next = await iterator.next();
+                if (next.done) {
+                    writer.finish();
+                    controller.close();
+                    return;
+                }
+                writer.writeRow(next.value);
+            }
+        },
+
+        async cancel(reason) {
+            await iterator.return?.(reason);
+        },
+    });
 }

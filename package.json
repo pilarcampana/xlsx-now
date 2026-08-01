@@ -9,6 +9,14 @@
       "types": "./dist/src/core/index.d.ts",
       "default": "./dist/src/core/index.js"
     },
+    "./node": {
+      "types": "./dist/src/node/index.d.ts",
+      "default": "./dist/src/node/index.js"
+    },
+    "./browser": {
+      "types": "./dist/src/browser/index.d.ts",
+      "default": "./dist/src/browser/index.js"
+    },
     "./umd": {
       "types": "./dist/src/core/index.d.ts",
       "default": "./dist/umd/xlsx-now.umd.js"

@@ -15,13 +15,3 @@ export interface Column {
 
 /** Accepts sync and async sources alike, so `rows` can be either. */
 export type ForAwaitable<T> = AsyncIterable<T> | Iterable<T>;
-
-/**
- * One entry of the zip container: a whole part as a string, or a part
- * produced incrementally (the worksheet).
- */
-export interface ZipEntry {
-    /** Path inside the archive, e.g. `xl/worksheets/sheet1.xml`. */
-    name: string;
-    input: string | AsyncIterable<string>;
-}
