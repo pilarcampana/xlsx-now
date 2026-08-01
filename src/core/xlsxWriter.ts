@@ -1,5 +1,5 @@
 import { contentTypesXml, rootRelsXml, workbookRelsXml, workbookXml } from './parts.js';
-import { dataRowXml, FIRST_DATA_ROW, headerRowXml, SHEET_FOOTER, SHEET_HEADER } from './sheet.js';
+import { dataRowXml, FIRST_DATA_ROW, headerRowXml, sheetHeaderXml, SHEET_FOOTER } from './sheet.js';
 import { stylesXml } from './styles.js';
 import type { Column, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
@@ -62,7 +62,7 @@ export class XlsxWriter {
             // the one part whose length nobody knows yet.
             this.zip.startEntry(WORKSHEET_PART);
         });
-        this.batch = SHEET_HEADER + headerRowXml(columns);
+        this.batch = sheetHeaderXml(columns) + headerRowXml(columns);
     }
 
     /**

@@ -9,7 +9,11 @@ export interface Column {
     name: string;
     /** Property read from each record; defaults to `name`. */
     key?: string;
-    /** Marks the column as a primary key, so it gets the highlight fill. */
+    /**
+     * Marks the column as a primary key, so it gets the highlight fill — and,
+     * while the pks are the sheet's first columns, so it stays frozen next to
+     * the header row.
+     */
     pk?: boolean;
 }
 

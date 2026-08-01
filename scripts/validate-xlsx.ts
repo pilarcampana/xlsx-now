@@ -112,6 +112,37 @@ interface WorkbookReport {
     rows: number;
     header: string[];
     lastName: unknown;
+    frozen: string;
+}
+
+function isPkFilled(cell: ExcelJS.Cell): boolean {
+    return cell.fill?.type === 'pattern' && cell.fill.fgColor?.argb === PK_FILL_ARGB;
+}
+
+/**
+ * The header row and the leading pk columns should be frozen, so they stay on
+ * screen while the sheet scrolls — and no column at all when the pks are not
+ * the first columns, or when every column is one.
+ *
+ * Which columns are pk is read back from the fills in the file, not taken
+ * from the writer's own configuration.
+ */
+function checkFrozenPanes(sheet: ExcelJS.Worksheet): string {
+    const headerRow = sheet.getRow(1);
+    let leadingPks = 0;
+    while (leadingPks < sheet.columnCount && isPkFilled(headerRow.getCell(leadingPks + 1))) {
+        leadingPks++;
+    }
+    const expectedX = leadingPks === sheet.columnCount ? 0 : leadingPks;
+
+    const view = sheet.views?.[0];
+    check(view?.state === 'frozen', `the sheet view is ${view?.state ?? 'missing'}, not frozen`);
+    check(view.ySplit === 1, `frozen rows: expected 1, found ${view.ySplit}`);
+    check(
+        (view.xSplit ?? 0) === expectedX,
+        `frozen columns: expected ${expectedX} (leading pk columns), found ${view.xSplit ?? 0}`,
+    );
+    return `1 row + ${expectedX} column${expectedX === 1 ? '' : 's'}`;
 }
 
 async function checkWorkbook(path: string, expectedRows: number | undefined): Promise<WorkbookReport> {
@@ -129,17 +160,10 @@ async function checkWorkbook(path: string, expectedRows: number | undefined): Pr
     }
 
     const pkHeader = headerRow.getCell(1);
-    check(
-        pkHeader.fill?.type === 'pattern' && pkHeader.fill.fgColor?.argb === PK_FILL_ARGB,
-        `PK header fill is ${JSON.stringify(pkHeader.fill)}`,
-    );
+    check(isPkFilled(pkHeader), `PK header fill is ${JSON.stringify(pkHeader.fill)}`);
 
     const firstData = sheet.getRow(2);
-    const pkCell = firstData.getCell(1);
-    check(
-        pkCell.fill?.type === 'pattern' && pkCell.fill.fgColor?.argb === PK_FILL_ARGB,
-        'PK cell not filled',
-    );
+    check(isPkFilled(firstData.getCell(1)), 'PK cell not filled');
 
     const plainCell = firstData.getCell(2);
     check(
@@ -159,6 +183,7 @@ async function checkWorkbook(path: string, expectedRows: number | undefined): Pr
         rows: sheet.rowCount,
         header,
         lastName: sheet.getRow(sheet.rowCount).getCell(2).value,
+        frozen: checkFrozenPanes(sheet),
     };
 }
 
@@ -184,6 +209,7 @@ async function main(): Promise<void> {
             `last name ${JSON.stringify(workbook.lastName)}`,
     );
     console.log(`    columns      ${JSON.stringify(workbook.header)}`);
+    console.log(`    frozen       ${workbook.frozen}`);
     console.log('    zip          2.0, no ZIP64, deflate, streamed (data descriptor), CRC verified');
     console.log(
         `    sheet1.xml   ${n(container.sheetRawBytes)} B -> ` +
