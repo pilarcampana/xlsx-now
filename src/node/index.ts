@@ -1,70 +1,76 @@
-// Node-only helpers. Everything here touches `node:` modules, which is
-// exactly why it lives outside src/core — core has to keep loading unchanged
-// in the browser.
+// Node speaks the Web Streams standard natively, so the writer needs no
+// Node-specific face: `XlsxStream` goes straight into a `pipeThrough` chain
+// here exactly as it does in the browser. What is left in this module is the
+// one thing the standard has no answer for in Node — a file as a destination
+// — and the convenience wrapper built on it.
 import { createWriteStream } from 'node:fs';
-import { Readable, Transform, type TransformCallback } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web';
 import { createXlsxStream, type CreateXlsxStreamOptions } from '../core/createXlsxStream.js';
-import type { Row } from '../core/types.js';
-import { XlsxWriter, type XlsxWriterOptions } from '../core/xlsxWriter.js';
-
-export type XlsxTransformOptions = XlsxWriterOptions;
-
-/** Runs `step`, reporting either outcome through a Node stream callback. */
-function report(step: () => void, callback: TransformCallback): void {
-    try {
-        step();
-    } catch (err) {
-        callback(err instanceof Error ? err : new Error(String(err)));
-        return;
-    }
-    callback();
-}
 
 /**
- * A styled `.xlsx` as a native Node `Transform`, so the writer can sit in a
- * plain `.pipe()` chain between whatever produces the records and wherever
- * the file has to go:
+ * A file as a Web `WritableStream<Uint8Array>`, to close a `pipeTo`.
  *
- * ```js
- * createReadStream('input.ndjson')
- *     .pipe(new LineSplitter({}))
- *     .pipe(new JsonParserTransformer())
- *     .pipe(new XlsxTransform({ columns, sheetName: 'Widgets' }))
- *     .pipe(createWriteStream('widgets.xlsx'));
- * ```
+ * Node has no native web-stream writer to a file, so this bridges its own
+ * `fs.WriteStream` — the only Node stream left anywhere in the package.
  *
- * The writable side is in object mode and takes one record per chunk; the
- * readable side emits the file's bytes. Nothing is buffered: Node's own
- * backpressure — the readable side full, so `_transform` is not called again
- * — is what stops records from being consumed faster than they can be
- * written out.
+ * Node ships a ready-made bridge, `Writable.toWeb`, and this does not use it:
+ * it does not carry the file's backpressure tightly enough. Writing a million
+ * rows uncompressed (a 247 MB file, where the writer outruns the disk by the
+ * widest margin) peaks at 348 MB of RSS through `Writable.toWeb` against
+ * 111 MB straight into a web sink. Waiting on `drain` here, which is all the
+ * difference amounts to, brings it back down.
  */
-export class XlsxTransform extends Transform {
-    readonly #writer: XlsxWriter;
+export function createFileWritable(path: string): WritableStream<Uint8Array> {
+    const file = createWriteStream(path);
 
-    constructor(options: XlsxTransformOptions) {
-        super({ writableObjectMode: true });
-        this.#writer = new XlsxWriter((bytes) => {
-            this.push(bytes);
-        }, options);
+    // The file can fail before a single byte is offered to it — a bad path
+    // fails on open — and an `error` nobody is listening for becomes an
+    // uncaught exception. So it is always listened for, kept, and handed to
+    // whichever step is waiting, or to the next one to start.
+    let failure: Error | undefined;
+    const waiting = new Set<(err: Error) => void>();
+    file.on('error', (err: Error) => {
+        failure = err;
+        for (const reject of waiting) reject(err);
+        waiting.clear();
+    });
+
+    /**
+     * Resolves once `step` reports done, and rejects if the file fails —
+     * either through the `error` event above or through the error a Node
+     * callback is handed as its first argument.
+     */
+    function until(step: (done: (err?: Error | null) => void) => void): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            if (failure) {
+                reject(failure);
+                return;
+            }
+            waiting.add(reject);
+            step((err) => {
+                waiting.delete(reject);
+                if (err) reject(err);
+                else resolve();
+            });
+        });
     }
 
-    override _transform(record: Row, _encoding: BufferEncoding, callback: TransformCallback): void {
-        report(() => this.#writer.writeRow(record), callback);
-    }
-
-    override _flush(callback: TransformCallback): void {
-        report(() => this.#writer.finish(), callback);
-    }
-}
-
-/** A Web `ReadableStream<Uint8Array>` as a Node `Readable`. */
-export function toNodeReadable(stream: ReadableStream<Uint8Array>): Readable {
-    // Same object at runtime; the cast only bridges the DOM lib's
-    // ReadableStream declaration and node:stream/web's.
-    return Readable.fromWeb(stream as unknown as NodeWebReadableStream<Uint8Array>);
+    return new WritableStream<Uint8Array>({
+        write(chunk) {
+            // `write` returns false once the file's own buffer is full, and
+            // only then is there anything to wait for. Not resolving until
+            // `drain` is what carries the backpressure back up the chain.
+            return until((done) => {
+                if (file.write(chunk)) done();
+                else file.once('drain', done);
+            });
+        },
+        close() {
+            return until((done) => file.end(done));
+        },
+        abort(reason: unknown) {
+            file.destroy(reason instanceof Error ? reason : new Error(String(reason)));
+        },
+    });
 }
 
 /**
@@ -72,5 +78,5 @@ export function toNodeReadable(stream: ReadableStream<Uint8Array>): Readable {
  * an array, a generator, a database cursor. Resolves once the file is closed.
  */
 export async function writeXlsxFile(path: string, options: CreateXlsxStreamOptions): Promise<void> {
-    await pipeline(toNodeReadable(createXlsxStream(options)), createWriteStream(path));
+    await createXlsxStream(options).pipeTo(createFileWritable(path));
 }

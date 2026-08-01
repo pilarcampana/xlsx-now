@@ -35,21 +35,24 @@ The public API is a **stream transform**: records go in one side, one per
 chunk, and the bytes of the `.xlsx` come out the other. It is meant to sit in
 the middle of a pipe, not at the head of one.
 
-At the centre is `XlsxWriter` (`xlsxWriter.ts`), which knows nothing about
-streams: `writeRow(record)`, `finish()`, and every byte handed to a sink as
-soon as it exists. Each environment wraps it in its own native stream type,
-and the wrapper is a dozen lines because the standard it wraps already does
-the work:
+It is **Web Streams throughout**, in Node as much as in the browser. Node has
+had `ReadableStream`, `WritableStream` and `TransformStream` as globals since
+v18, so there is no Node-flavoured variant of the writer to keep in step —
+one class, one behaviour, both environments:
 
-| face | what it is |
+| export | what it is |
 | --- | --- |
-| `XlsxTransform` (`xlsx-now/node`) | a native `stream.Transform`, for `.pipe()` chains |
-| `XlsxStream` (`xlsx-now`) | a Web `TransformStream`, for `.pipeThrough()` |
-| `createXlsxStream` (`xlsx-now`) | a `ReadableStream` that *pulls* the records, for sources that aren't streams |
+| `XlsxStream` | a `TransformStream<Row, Uint8Array>`, for `.pipeThrough()` |
+| `createXlsxStream` | a `ReadableStream` that *pulls* the records, for sources that aren't streams |
+| `XlsxWriter` | the engine under both: `writeRow(record)`, `finish()`, no streams at all |
 
-Using the platform's own stream types rather than a hand-rolled pair is the
-point. The paths that matter here are the ones that break silently when
-written by hand, and each of these gets them for free:
+`XlsxWriter` knows nothing about streams — every byte goes to a sink as soon
+as it exists — and the two stream faces are a dozen lines each, because the
+standard already does the work.
+
+Leaning on the standard rather than a hand-rolled pair is the point. The paths
+that matter here are the ones that break silently when written by hand, and
+they come for free:
 
 - the row source fails → the file's stream errors, so the consumer gets the
   failure instead of a truncated file;
@@ -83,9 +86,13 @@ environment, and ships as its own entry point:
 
 | module | contents |
 | --- | --- |
-| `xlsx-now` (`src/core`) | `XlsxWriter`, `XlsxStream`, `createXlsxStream`, the types — runs in both |
-| `xlsx-now/node` (`src/node`) | `XlsxTransform`, `writeXlsxFile`, `toNodeReadable` |
+| `xlsx-now` (`src/core`) | `XlsxStream`, `createXlsxStream`, `XlsxWriter`, the types — runs in both |
+| `xlsx-now/node` (`src/node`) | `createFileWritable`, `writeXlsxFile` |
 | `xlsx-now/browser` (`src/browser`) | `downloadXlsx`, `createXlsxBlob` |
+
+Neither of those two contains a writer: they only supply the *destination*
+the standard has no answer for on that platform — a file on Node, the save
+dialog or a `Blob` in the browser.
 
 ## The zip container
 
@@ -132,30 +139,10 @@ const columns = [
 ];
 ```
 
-### Node: `new XlsxTransform(...)` in a pipe chain
+### `new XlsxStream(...)` in a pipe chain
 
-A native `stream.Transform`, so it drops into an ordinary `.pipe()` chain
-between whatever produces the records and wherever the file has to go. Its
-writable side is in object mode and takes one record per chunk, which is what
-a line splitter plus a JSON parser upstream already produce:
-
-```js
-import { createReadStream, createWriteStream } from 'node:fs';
-import { XlsxTransform } from 'xlsx-now/node';
-
-createReadStream('widgets.ndjson')
-    .pipe(new LineSplitter({}))
-    .pipe(new JsonParserTransformer())
-    .pipe(new XlsxTransform({ columns, sheetName: 'Widgets' }))
-    .pipe(createWriteStream('widgets.xlsx'));
-```
-
-[`examples/node/write-file.ts`](examples/node/write-file.ts) is a runnable
-version, using `pipeline` so a failure anywhere in the chain surfaces.
-
-### Browser: `new XlsxStream(...)` in a pipe chain
-
-The same writer as a Web `TransformStream`, one record per chunk:
+A `TransformStream<Row, Uint8Array>`: one record per chunk in, the file's
+bytes out.
 
 ```js
 import { XlsxStream } from 'xlsx-now';
@@ -164,6 +151,26 @@ await rows                                         // ReadableStream<Row>
     .pipeThrough(new XlsxStream({ columns, sheetName: 'Widgets' }))
     .pipeTo(destination);                          // WritableStream<Uint8Array>
 ```
+
+The same call in Node, with an NDJSON file at one end and an `.xlsx` at the
+other. Every link is a `TransformStream`, so the chain itself is portable —
+only the two ends are platform-specific:
+
+```js
+import { openAsBlob } from 'node:fs';
+import { XlsxStream } from 'xlsx-now';
+import { createFileWritable } from 'xlsx-now/node';
+
+await (await openAsBlob('widgets.ndjson')).stream()
+    .pipeThrough(new TextDecoderStream())
+    .pipeThrough(new LineSplitStream())            // ~10 lines, see the example
+    .pipeThrough(new JsonParseStream())
+    .pipeThrough(new XlsxStream({ columns, sheetName: 'Widgets' }))
+    .pipeTo(createFileWritable('widgets.xlsx'));
+```
+
+[`examples/node/write-file.ts`](examples/node/write-file.ts) is exactly this,
+runnable, splitter and parser included.
 
 ### Records that are not a stream: `createXlsxStream(...)`
 
@@ -188,6 +195,17 @@ This one pulls: a record is read only when the consumer asks for more bytes,
 so memory stays flat even for a data set still being received. In Node,
 `writeXlsxFile(path, options)` from `xlsx-now/node` takes the same options and
 writes the file in one call.
+
+### A note on `createFileWritable`
+
+Node has no native web-stream writer to a file, so `xlsx-now/node` bridges
+`fs.WriteStream` — the only Node stream anywhere in the package. It does
+**not** use Node's own `Writable.toWeb` for that, because it does not carry
+the file's backpressure tightly enough: writing a million rows uncompressed
+(247 MB, where the writer outruns the disk by the widest margin) peaks at
+348 MB of RSS through `Writable.toWeb`, against 111 MB straight into a web
+sink. Waiting on `drain`, which is the whole of the difference, brings it back
+to 109 MB.
 
 ### Browser
 
