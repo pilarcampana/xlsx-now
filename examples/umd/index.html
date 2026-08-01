@@ -3,9 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <title>xlsx-now UMD PoC</title>
-<!-- The whole point of the UMD build: one classic <script> tag, no module
-     type, no import map, no bundler. The bundle inlines fflate and exposes
-     everything on window.xlsxNow. -->
+<!-- The whole point of the UMD build: classic <script> tags, no module type, no
+     import map, no bundler. The bundle does not inline its dependency, so
+     fflate is loaded first (it exposes window.fflate, which the bundle picks
+     up); the bundle itself then exposes everything on window.xlsxNow. -->
+<script src="/node_modules/fflate/umd/index.js"></script>
 <script src="/dist/umd/xlsx-now.umd.js"></script>
 </head>
 <body>

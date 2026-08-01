@@ -288,14 +288,18 @@ dist/umd/xlsx-now.umd.js   # global `xlsxNow`, also AMD- and CommonJS-aware
 
 It is produced by Rollup (`rollup.config.mjs`) from the JS `tsc` already
 emitted, so TypeScript compilation still happens in exactly one place and the
-bundler only converts module format and inlines dependencies. `fflate` is
-inlined into the bundle, so a script tag needs nothing else.
+bundler only joins this package's own modules into one file and converts the
+module format. Dependencies are declared `external`, so `fflate` is **not**
+copied into the bundle: it stays a `require('fflate')` under CommonJS, a
+declared dependency under AMD, and the `fflate` global under a plain
+`<script>` tag — which is the one case that needs it loaded first.
 
 The UMD build is a straight repackaging of `src/core/index.ts` — same exports,
 same signatures, no separate entry point and no API differences from the ESM
 path.
 
 ```html
+<script src="https://unpkg.com/fflate"></script>
 <script src="node_modules/xlsx-now/dist/umd/xlsx-now.umd.js"></script>
 <script>
   const stream = xlsxNow.createXlsxStream({
