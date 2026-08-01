@@ -34,7 +34,7 @@
   ],
   "scripts": {
     "build": "tsc && npm run build:umd",
-    "build:umd": "tsc -p tsconfig.umd.json && node dist/scripts/build-umd.js",
+    "build:umd": "rollup -c",
     "typecheck": "tsc --noEmit",
     "benchmark": "npm run build && node dist/examples/node/benchmark.js",
     "validate": "npm run build && node dist/scripts/validate-xlsx.js",
@@ -53,6 +53,7 @@
     "@types/yauzl": "^3.4.0",
     "exceljs": "^4.4.0",
     "playwright-core": "^1.62.0",
+    "rollup": "^4.62.3",
     "server4test": "^1.0.0",
     "typescript": "^5.9.3",
     "yauzl": "^3.4.0"

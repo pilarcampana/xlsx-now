@@ -249,15 +249,15 @@ Peak RSS barely moves with the row count — 200,000 rows peak at 123 MB against
 1,000,000 rows at 148 MB — which is the streaming claim measured rather than
 asserted. Most of that figure is the Node baseline, not the workbook.
 
-## TypeScript, no bundler
+## TypeScript, no bundler on the main path
 
 Everything is written in TypeScript under `strict` (plus
 `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`) and the shipped
 ESM is compiled with `tsc` alone — no bundler touches it, which keeps the
-"same file runs on both platforms" claim easy to check. There is no bundler
-in the repository at all: the optional [UMD build](#umd-build) described
-below is a second `tsc` invocation over the same sources, not a bundling
-step.
+"same file runs on both platforms" claim easy to check. A bundler
+(Rollup) is involved in exactly one place, the optional [UMD
+build](#umd-build) described below, and it consumes `tsc`'s output rather
+than the TypeScript sources.
 
 `tsconfig.json` uses `module: NodeNext`, so relative imports carry their
 `.js` extension in both source and output and the emitted ESM in `dist/`
@@ -286,21 +286,13 @@ those, `npm run build` also emits a UMD bundle:
 dist/umd/xlsx-now.umd.js   # global `xlsxNow`, also AMD- and CommonJS-aware
 ```
 
-No bundler produces it. `tsc -p tsconfig.umd.json` compiles the same
-`src/core` sources a second time with `module: amd` and `outFile`, which is
-`tsc`'s own way of emitting a whole module graph as a single file: every
-module becomes a `define(...)` call, they come out in dependency order, and
-bare specifiers — here only `fflate` — are left as unresolved named
-dependencies. `scripts/build-umd.ts` then splices that output into the
-hand-written envelope in [`src/umd/wrapper.js`](src/umd/wrapper.js), which
-supplies the UMD detection and a ~20-line AMD runtime, and shifts the source
-map down by the lines it prepended.
-
-So `fflate` is *not* inlined: the bundle asks its host for it, the same way
-the ESM build does. Under CommonJS that is a real `require('fflate')`, under
-AMD a declared dependency, and from a `<script>` tag it is `window.fflate`,
-which means fflate's own UMD build has to be loaded first (the bundle throws
-a clear error if it is not).
+It is produced by Rollup (`rollup.config.mjs`) from the JS `tsc` already
+emitted, so TypeScript compilation still happens in exactly one place and the
+bundler only joins this package's own modules into one file and converts the
+module format. Dependencies are declared `external`, so `fflate` is **not**
+copied into the bundle: it stays a `require('fflate')` under CommonJS, a
+declared dependency under AMD, and the `fflate` global under a plain
+`<script>` tag — which is the one case that needs it loaded first.
 
 The UMD build is a straight repackaging of `src/core/index.ts` — same exports,
 same signatures, no separate entry point and no API differences from the ESM
