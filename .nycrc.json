@@ -1,0 +1,8 @@
+{
+    "all": true,
+    "include": ["dist-test/src/**/*.js"],
+    "excludeAfterRemap": false,
+    "reporter": ["text-summary", "lcovonly", "html"],
+    "reportDir": "coverage",
+    "tempDir": ".nyc_output"
+}

@@ -362,6 +362,53 @@ npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundl
 npm run typecheck  # tsc --noEmit
 ```
 
+## Tests
+
+```sh
+npm test       # mocha
+npm run test-ci  # mocha under nyc: console summary, coverage/lcov.info, coverage/*.html
+```
+
+The tests live in [`test/`](test), are written in TypeScript against the
+sources in `src/` (never against `dist/`), and run on Node. The browser side
+is a second stage: what runs today is what Node can run, which turns out to
+be almost everything — `Blob`, `Response` and the Web Streams are all native
+here, so `src/browser/index.ts` is covered too, with only the DOM around it
+([`test/helpers/dom.ts`](test/helpers/dom.ts)) faked. Driving the real thing
+is still `npm run example:browser:test`.
+
+Every generated file is read back with implementations that had nothing to do
+with writing it — [`yauzl`](https://github.com/thejoshwolfe/yauzl) plus Node's
+own `zlib` for the container, [`exceljs`](https://github.com/exceljs/exceljs)
+for the workbook — for the same reason
+[`scripts/validate-xlsx.ts`](scripts/validate-xlsx.ts) does: checking with
+`fflate` would only prove that the writer agrees with itself. The container
+properties an OOXML consumer expects (ZIP 2.0, no ZIP64, deflate, sizes after
+the data, CRC recomputed from the inflated bytes) are asserted on the tests'
+own output, not just on the examples'.
+
+### The one thing that is not the shipped build
+
+`npm test` compiles `src/` and `test/` to **CommonJS** in `dist-test/`
+([`tsconfig.test.json`](tsconfig.test.json)), and that is what mocha loads.
+The reason is coverage: `nyc` instruments through Istanbul's `require` hook,
+which only ever sees CommonJS — point it at an ES module and every file comes
+back at 0%. Same sources, same strictness, one different `module` setting;
+the source maps `tsc` emits alongside are what makes the report land back on
+the `.ts` files. The shipped ESM in `dist/` is untouched by any of this.
+
+The build is a script rather than a line in `package.json`
+([`scripts/build-tests.cjs`](scripts/build-tests.cjs)) because of its last
+step: the package is `"type": "module"`, so the CommonJS it just emitted
+needs its own `package.json` marker next to it, and writing that from a shell
+one-liner is where quoting stops being portable — AppVeyor runs the same
+`npm run test-ci` on Windows.
+
+Coverage stands at 100% of lines and functions of `src/`, and one statement
+short of 100% of statements: the `if (!this.batch) return` guard in
+`XlsxWriter.pushBatch`, which nothing driving the writer from outside can
+reach (`finish()` always appends the worksheet footer before pushing).
+
 ## UMD build
 
 The ESM output above is the primary artifact, but it can't be consumed from a
@@ -484,6 +531,11 @@ columns — fails the freeze check.
 
 ## What this PoC does *not* cover yet
 
+- **The test suite in a browser.** [The tests](#tests) run on Node, where
+  `src/browser/index.ts` is covered against a faked DOM; running the same
+  suite in a real browser is the second stage. Until then, the closest thing
+  is `npm run example:browser:test`, which drives the example page through
+  Chromium.
 - **Reading `.xlsx`.** Not attempted — this is a well-solved problem
   (SheetJS, `exceljs`); no reason to build it from scratch here.
 - **True OS-level streaming download in the browser without File System

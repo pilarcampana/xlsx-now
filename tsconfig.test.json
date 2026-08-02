@@ -1,0 +1,27 @@
+// The test build. Same sources, same strictness, one difference: the module
+// format.
+//
+// `nyc` measures coverage with Istanbul's `require` hook, which only ever sees
+// CommonJS — an ESM module is loaded by Node's own loader and comes out at 0%.
+// So the tests compile `src/` and `test/` to CommonJS in `dist-test/`, and the
+// source maps `tsc` emits alongside are what nyc uses to report the coverage
+// back against the `.ts` files it came from.
+//
+// The shipped ESM in `dist/` is still what `npm run build` produces and what
+// the package exports; this build exists only for the duration of a test run.
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "module": "CommonJS",
+        "moduleResolution": "Node10",
+        // Meaningful only for a `module` that has one emit; here the ESM
+        // syntax in `src/` is deliberately being emitted as `require`.
+        "verbatimModuleSyntax": false,
+        "outDir": "dist-test",
+        "types": ["node", "mocha"],
+        // Nothing consumes these types; the declarations are dead weight.
+        "declaration": false,
+        "declarationMap": false
+    },
+    "include": ["src/**/*.ts", "test/**/*.ts"]
+}

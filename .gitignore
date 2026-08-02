@@ -81,6 +81,8 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+# The CommonJS build the tests run on (see tsconfig.test.json)
+dist-test
 .output
 
 # Gatsby files
