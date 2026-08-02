@@ -1,3 +1,4 @@
+import { WidthMeter } from './autoWidth.js';
 import {
     checkRecord,
     isLineCommand,
@@ -19,7 +20,14 @@ import {
     worksheetPart,
     sheetName,
 } from './parts.js';
-import { cellRowXml, sheetHeaderXml, SHEET_FOOTER, type RowOptions } from './sheet.js';
+import {
+    cellRowXml,
+    sheetHeaderXml,
+    SHEET_FOOTER,
+    type ColumnFormats,
+    type Freeze,
+    type RowOptions,
+} from './sheet.js';
 import { StyleTable, type StyleSpec } from './styles.js';
 import type { CellRow, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
@@ -83,6 +91,19 @@ export class XlsxWriter {
     private readonly sheetNames: string[] = [];
     /** The columns of the sheet being written, if it has any. */
     private mode: ColumnsMode | undefined;
+    /**
+     * What the sheet's cells measure into. Every sheet has one; a sheet with
+     * no `autoWidthMax` gets a meter that measures nothing.
+     */
+    private widths = new WidthMeter(undefined);
+    /**
+     * What the header of the sheet being written will be made of. Opening a
+     * sheet does not write it: `<cols>` carries widths the cells may still be
+     * measuring, so the header is put together — and the worksheet part
+     * started — at the first moment the sheet's bytes have to go out, which is
+     * `pushBatch`.
+     */
+    private pendingHeader: { freeze: Freeze; columnFormats: ColumnFormats | undefined } | undefined;
     private open = false;
     private batch = '';
     private rowNumber = 1;
@@ -115,20 +136,40 @@ export class XlsxWriter {
         }
     }
 
+    /**
+     * The batch, out to the zip — and, the first time a sheet gets here, the
+     * header and the worksheet part to put it in. The part is started at this
+     * point and not when the sheet was opened, so that everything the header
+     * says is settled by the time it is written: `<cols>` goes before the
+     * first row and carries widths the cells may have been measuring.
+     */
     private pushBatch(): void {
-        if (!this.batch) return;
+        const pending = this.pendingHeader;
+        if (pending) {
+            this.pendingHeader = undefined;
+            // The worksheet stays open until the next command or `finish`: it
+            // is the one part whose length nobody knows yet.
+            this.zip.startEntry(worksheetPart(this.sheetNames.length));
+            const widths = this.widths.columnWidths();
+            this.batch =
+                sheetHeaderXml(pending.freeze, this.styles, pending.columnFormats, widths) +
+                this.batch;
+        }
         this.zip.push(encoder.encode(this.batch));
         this.batch = '';
     }
 
     private writeCellRow(row: CellRow, options?: RowOptions): void {
-        this.batch += cellRowXml(this.rowNumber, row, this.styles, options);
+        this.batch += cellRowXml(this.rowNumber, row, this.styles, options, this.widths);
         this.rowNumber++;
-        if (this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
+        // A sheet that is measuring itself has nowhere to push to: its `<cols>`
+        // is written from rows that have not arrived yet, so it waits for its
+        // last one. Any other sheet goes out as it is written.
+        if (!this.widths.measures && this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
     }
 
     /**
-     * Starts a worksheet part, and its header row when it has columns.
+     * Opens a worksheet, and writes its header row when it has columns.
      * `sheet` is the command that opened it, or the writer options for the
      * first one; either way, whatever it leaves out falls back to the
      * options, and then to what the columns imply.
@@ -137,6 +178,7 @@ export class XlsxWriter {
         const name = sheetName(asked, this.sheetNames, this.sheetNames.length + 1);
         const columns = sheet.columns ?? this.defaults.columns;
         const columnFormats = sheet.columnFormats ?? this.defaults.columnFormats;
+        const autoWidthMax = sheet.autoWidthMax ?? this.defaults.autoWidthMax;
         // A header row with no column in it is nobody's intention, so an
         // empty list reads as the rows mode — which is how a sheet opts out
         // of the columns the workbook declared.
@@ -148,10 +190,9 @@ export class XlsxWriter {
         };
 
         this.sheetNames.push(name);
-        // The worksheet stays open until the next command or `finish`: it is
-        // the one part whose length nobody knows yet.
-        this.zip.startEntry(worksheetPart(this.sheetNames.length));
-        this.batch = sheetHeaderXml(freeze, this.styles, columnFormats);
+        this.widths = new WidthMeter(autoWidthMax);
+        this.pendingHeader = { freeze, columnFormats };
+        this.batch = '';
         this.rowNumber = 1;
         this.mode = mode;
         this.open = true;
@@ -161,6 +202,8 @@ export class XlsxWriter {
     }
 
     private closeSheet(): void {
+        // Whatever is left of the sheet, header included when nothing of it
+        // has gone out yet — a sheet with no row in it is still a sheet.
         this.batch += SHEET_FOOTER;
         this.pushBatch();
         this.zip.endEntry();

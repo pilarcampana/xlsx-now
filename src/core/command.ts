@@ -38,6 +38,19 @@ export interface SheetOptions {
      * that its column C is 30 characters wide.
      */
     columnFormats?: ColumnFormats;
+    /**
+     * Sizes every column of the sheet by what is written in it: the longest
+     * cell of the column, counted in characters, is its width — up to this
+     * many characters, which is where a column of long text stops growing. A
+     * width given in `columnFormats` is the width, and is not measured over.
+     *
+     * Left out, nothing is measured and the sheet goes out as it is written.
+     * Given, the widths are only known once the sheet's last row is in, and
+     * `<cols>` comes before the first one: the worksheet is held in memory
+     * until it closes and goes into the archive whole. That is the cost of
+     * asking, and it is per sheet — a `#worksheet` command starts a new one.
+     */
+    autoWidthMax?: number;
     /** Rows fixed at the top of the sheet. Defaults to 0, or to 1 with `columns`. */
     freezeRows?: number;
     /**

@@ -77,6 +77,12 @@ split in layers:
   the columns it returns the freeze they imply, the header row, and the
   function that reads one record by key into a row of cells. Nothing below it
   knows what a column is.
+- **The widths a sheet measures for itself.** `autoWidth.ts` counts
+  characters and nothing else: every cell on its way out is measured into the
+  column it lands in, and what comes back is one width per column for
+  `sheet.ts` to merge into the `<cols>` it was going to write anyway. It is
+  the one thing here the writer cannot hand over as it goes — see
+  [Columns sized by what they hold](#columns-sized-by-what-they-hold-autowidthmax).
 - **The commands, alongside the rows.** `command.ts` defines the messages that
   are not rows: `#worksheet`, which the writer turns into the end of one
   worksheet part and the start of the next, and `#line`, which is a row said
@@ -392,6 +398,62 @@ The column style costs nothing per cell — Excel applies it to every cell of
 the column that carries no style of its own, so it is written once in the
 worksheet's `<cols>` and never stamped on a row.
 
+### Columns sized by what they hold: `autoWidthMax`
+
+`autoWidthMax` sizes every column of the sheet by what is written in it: the
+longest cell of the column, counted in characters, is its width — up to that
+many characters, which is where a column of long text stops growing.
+
+```js
+const xlsxStream = createXlsxStream({
+    columns,
+    autoWidthMax: 40,
+    rows,
+});
+```
+
+It works the same in either mode — a sheet of records is measured through the
+row each one is read into, and a sheet of arrays through the cells' positions,
+which is where they were going to be written anyway. The header row is
+measured like any other, so a column of short values under a long name comes
+out as wide as the name.
+
+**What a width is given to.** Every column that had something written in it.
+A column of blanks measured nothing and gets no width, and neither does one
+nobody wrote in at all: they keep whatever `columnFormats` says about them,
+and Excel's default width when it says nothing either.
+
+**What is measured.** What the cell will show: the characters of a string, the
+digits of a number, `TRUE`/`FALSE`, and — for a date — the format it gets,
+`yyyy-mm-dd` or `yyyy-mm-dd hh:mm:ss`. A formula is measured by the cached
+result it carries, and not at all when it carries none: there is nothing in
+the file to be wide for until a reader recalculates it. The one thing this
+cannot see is a *number format*: `1234.5` is measured as the six characters it
+is written as, not as the `1.234,50` a `numFmt` may show it as. A column whose
+format makes its values longer is a column to give a width to outright.
+
+**A width given outright wins.** `columnFormats` is where the sheet says what
+it wants, and nothing measures over it — the two go together, and a format
+that says everything but the width gets the measured one filled in:
+
+```js
+columnFormats: { A: { width: 3 }, D: { hidden: true } },
+autoWidthMax: 40,   // A stays at 3, D is measured and stays hidden
+```
+
+**What it costs.** `<cols>` is written before the first row of the worksheet
+and the widths are not known until the last one, so a sheet that measures
+itself is held in memory until it closes and then goes into the archive whole.
+That is the whole of the cost, and it is per sheet: a `#worksheet` command
+closes the one being measured and starts the next, so a workbook of many
+sheets never holds more than the one it is writing. Without `autoWidthMax` —
+the default — nothing is measured, nothing is held, and the sheet goes out in
+batches as it is written, exactly as before.
+
+Like `columns`, `columnFormats` and the freezes, `autoWidthMax` can be given
+in the writer options as the workbook's default and again on a `#worksheet`
+command for the sheet it opens.
+
 ### Frozen rows and columns
 
 `freezeRows` and `freezeColumns` fix that many rows at the top and columns at
@@ -475,7 +537,7 @@ const xlsxStream = createXlsxStream({
 ```
 
 The command carries the sheet's own configuration — `columns`,
-`columnFormats`, `freezeRows`, `freezeColumns` — and what it leaves out falls
+`columnFormats`, `autoWidthMax`, `freezeRows`, `freezeColumns` — and what it leaves out falls
 back to the writer options,
 which are the workbook's defaults. So a table split across sheets repeats
 nothing:
