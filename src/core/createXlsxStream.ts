@@ -1,8 +1,10 @@
+import type { SheetInput } from './command.js';
 import type { ForAwaitable } from './types.js';
-import { XlsxWriter, type RowOf, type XlsxWriterOptions } from './xlsxWriter.js';
+import { XlsxWriter, type XlsxWriterOptions } from './xlsxWriter.js';
 
-export type CreateXlsxStreamOptions<O extends XlsxWriterOptions = XlsxWriterOptions> = O & {
-    rows: ForAwaitable<RowOf<O>>;
+export type CreateXlsxStreamOptions = XlsxWriterOptions & {
+    /** The messages of the workbook: rows of cells, records, and commands. */
+    rows: ForAwaitable<SheetInput>;
 };
 
 /** One iterator for both kinds of source; `await` on a sync result is free. */
@@ -18,22 +20,22 @@ function iterate<T>(rows: ForAwaitable<T>): AsyncIterator<T> | Iterator<T> {
  * Web `ReadableStream<Uint8Array>`, ready to be piped at a file, an HTTP
  * response or a `Blob`.
  *
- * `rows` accepts anything iterable, sync or async. The stream pulls: records
- * are read only when the consumer asks for more bytes, which is what keeps
- * memory flat however many of them are coming.
+ * `rows` accepts anything iterable, sync or async, and carries the whole
+ * workbook: rows of cells, records read by the sheet's columns, and the
+ * `{ '#worksheet': name }` commands that open one sheet after another. The
+ * stream pulls: messages are read only when the consumer asks for more bytes,
+ * which is what keeps memory flat however many of them are coming.
  */
-export function createXlsxStream<O extends XlsxWriterOptions>(
-    options: CreateXlsxStreamOptions<O>,
-): ReadableStream<Uint8Array> {
+export function createXlsxStream(options: CreateXlsxStreamOptions): ReadableStream<Uint8Array> {
     const iterator = iterate(options.rows);
-    let writer!: XlsxWriter<O>;
+    let writer!: XlsxWriter;
     let emitted = false;
 
     return new ReadableStream<Uint8Array>({
         start(controller) {
             // `rows` rides along in the options the writer gets; it reads the
             // ones it knows and this is the only place the extra one exists.
-            writer = new XlsxWriter<O>((bytes) => {
+            writer = new XlsxWriter((bytes) => {
                 emitted = true;
                 controller.enqueue(bytes);
             }, options);

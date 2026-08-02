@@ -1,13 +1,12 @@
-import { XlsxWriter, type RowOf, type XlsxWriterOptions } from './xlsxWriter.js';
+import type { SheetInput } from './command.js';
+import { XlsxWriter, type XlsxWriterOptions } from './xlsxWriter.js';
 
 export type XlsxStreamOptions = XlsxWriterOptions;
 
-function xlsxTransformer<O extends XlsxStreamOptions>(
-    options: O,
-): Transformer<RowOf<O>, Uint8Array> {
+function xlsxTransformer(options: XlsxStreamOptions): Transformer<SheetInput, Uint8Array> {
     // Assigned by `start`, which the stream always runs before `transform`
     // and `flush`.
-    let writer!: XlsxWriter<O>;
+    let writer!: XlsxWriter;
 
     return {
         start(controller) {
@@ -23,12 +22,16 @@ function xlsxTransformer<O extends XlsxStreamOptions>(
 }
 
 /**
- * A styled `.xlsx` as a Web `TransformStream`: records go in the writable
+ * A styled `.xlsx` as a Web `TransformStream`: messages go in the writable
  * side, one per chunk, and the bytes of the file come out the readable side.
  *
  * ```js
  * rows.pipeThrough(new XlsxStream({ columns })).pipeTo(destination)
  * ```
+ *
+ * A message is a row — an array of cells, or a record read by the sheet's
+ * columns — or a `{ '#worksheet': name }` command, which sends everything
+ * that follows to a new sheet.
  *
  * This is the browser-side face of `XlsxWriter`; in Node, `XlsxTransform`
  * from `xlsx-now/node` is the same writer as a native `stream.Transform`, for
@@ -38,11 +41,8 @@ function xlsxTransformer<O extends XlsxStreamOptions>(
  * standard's own backpressure — readable side full, writable side not ready —
  * is what stops rows from being consumed faster than they can be written out.
  */
-export class XlsxStream<O extends XlsxStreamOptions = XlsxStreamOptions> extends TransformStream<
-    RowOf<O>,
-    Uint8Array
-> {
-    constructor(options: O) {
+export class XlsxStream extends TransformStream<SheetInput, Uint8Array> {
+    constructor(options: XlsxStreamOptions = {}) {
         super(xlsxTransformer(options));
     }
 }

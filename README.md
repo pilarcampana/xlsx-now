@@ -1,8 +1,10 @@
 # xlsx-now
 
 XLSX fast outputs — a streaming XLSX writer with real cell styles (bold
-headers, highlighted primary-key columns) and a frozen header row, designed to
-run **unmodified in Node and in the browser**.
+headers, highlighted primary-key columns), a frozen header row and as many
+worksheets as the stream cares to open, designed to run **unmodified in Node
+and in the browser**. The stream carries the workbook: rows, and the commands
+that open a sheet or spell a line out.
 
 ## Why not just fork `xlsx-write-stream`?
 
@@ -42,9 +44,9 @@ one class, one behaviour, both environments:
 
 | export | what it is |
 | --- | --- |
-| `XlsxStream` | a `TransformStream<Row, Uint8Array>`, for `.pipeThrough()` |
+| `XlsxStream` | a `TransformStream<SheetInput, Uint8Array>`, for `.pipeThrough()` |
 | `createXlsxStream` | a `ReadableStream` that *pulls* the rows, for sources that aren't streams |
-| `XlsxWriter` | the engine under both: `writeRow(row)`, `finish()`, no streams at all |
+| `XlsxWriter` | the engine under both: `writeRow(message)`, `finish()`, no streams at all |
 
 `XlsxWriter` knows nothing about streams — every byte goes to a sink as soon
 as it exists — and the two stream faces are a dozen lines each, because the
@@ -74,6 +76,14 @@ split in layers:
   the columns it returns the freeze they imply, the header row, and the
   function that reads one record by key into a row of cells. Nothing below it
   knows what a column is.
+- **The commands, alongside the rows.** `command.ts` defines the messages that
+  are not rows: `#worksheet`, which the writer turns into the end of one
+  worksheet part and the start of the next, and `#line`, which is a row said
+  outright — with a height, a style or a column letter, none of which a bare
+  array has room for. See
+  [Several worksheets in one stream](#several-worksheets-in-one-stream) for
+  how the workbook is put together without ever knowing how many sheets are
+  coming.
 - **The zip container — `fflate`, wrapped in `zip.ts`.** See
   [The zip container](#the-zip-container) for why that library. `zip.ts` is a
   thin adapter, not a zip implementation: `ZipWriter` takes bytes in and hands
@@ -134,10 +144,28 @@ to generate those"*. Files produced before this change declared version 4.5
 
 Every form takes the same static configuration in its constructor — sheet
 name, compression, what the sheet freezes and, in the columns mode, the
-columns — and then receives the rows. Nothing is required.
+columns — and then receives the messages. Nothing is required, and anything
+the constructor takes can arrive on the stream instead.
 
-There are two ways to say what a row is, and the first is the second one with
-a header on top.
+A message is one of three things:
+
+| message | what it is |
+| --- | --- |
+| `[1, 'Widget 1']` | a row of cells, where the position is the column |
+| `{ id: 1, name: 'Widget 1' }` | a record, read by the sheet's `columns` |
+| `{ '#worksheet': 'Summary' }` | a command: everything after it goes to a new sheet |
+| `{ '#line': 'array', values: [...] }` | a command: the line said outright, options and all |
+
+The first two are the same thing with a header on top, and they are not two
+modes to choose between: a sheet with `columns` takes records *and* rows of
+cells, in any order. The last one is those same two lines spelled out, for
+when the line has something to say beyond its cells.
+
+A key that starts with `#` is what makes a message a command. That is the one
+reserved character in the API, and it costs nothing: a column's `name` — what
+the header row shows — can be anything, `#` included, and only its `key` is
+restricted. A key that starts with `#` and is not a command the writer knows
+is refused by name, rather than going in as a row of blanks.
 
 ### The columns mode
 
@@ -158,6 +186,10 @@ columns get the highlight fill, and they are also what the sheet freezes.
 The sheet gets a bold header row of the column names, and every record becomes
 one row. That is all this mode is — it is written *as* the rows mode below,
 in `columns.ts`, and nothing underneath it knows what a column is.
+
+A sheet with columns still takes rows of cells, which is how a separator, a
+note or a totals line goes in without a column to hold it. A record on a sheet
+with *no* columns is the one combination that fails, and it says so.
 
 ### The rows mode
 
@@ -223,12 +255,134 @@ mode works out `freezeRows: 1` and however many leading pks there are, and
 hands them to the rows mode as the defaults. It costs one `<pane>` element at
 the top of the worksheet, before the first row.
 
+### Lines said outright: `#line`
+
+A row array and a record are recognized by their shape, which is all most
+lines need. `#line` is the same line said outright, and it buys three things
+that shape alone cannot express:
+
+```js
+{ '#line': 'row',    values: { id: 1, name: 'Ana' } }   // read by the columns
+{ '#line': 'array',  values: [1, 'Ana'] }               // position is the column
+{ '#line': 'sparse', values: { A: 1, F: 'Ana' } }       // cells by column letter
+{ '#line': 'empty' }                                     // a row and nothing in it
+```
+
+**Options on the row itself.** `height` (in points), `hidden` and a `style`
+for the whole row have nowhere to go on a bare array — every position there is
+a cell — and that is the main reason for the command:
+
+```js
+{ '#line': 'array', values: ['Total'], style: { bold: true }, height: 22 }
+{ '#line': 'empty', hidden: true }
+```
+
+The row `style` is the same `{ bold?, highlight? }` a cell takes, and it sits
+*under* whatever the cells carry themselves: a bold row with one highlighted
+cell is both.
+
+**`sparse`, which has no bare shape.** Keyed by column letters as the sheet
+shows them, in any case, and the gaps stay gaps — a line that touches A and BZ
+writes two cells, not seventy-eight:
+
+```js
+{ '#line': 'sparse', values: { A: 'Total', BZ: 12 } }
+```
+
+**Saying which one it is.** An array *is* already unambiguous, and so is a
+record — `'row'` and `'array'` exist so a generic producer can be explicit
+instead of relying on what its values happen to look like.
+
+An empty line needs no command, incidentally: a bare `[]` is a row with
+nothing in it, and always was. `{ '#line': 'empty' }` is the same row with
+somewhere to hang `height` or `hidden`.
+
+### Several worksheets in one stream
+
+A `#worksheet` message closes the sheet being written and opens a new one.
+Nothing else changes: the same stream keeps carrying rows, and they land on
+whichever sheet is open when they arrive.
+
+```js
+import { createXlsxStream } from 'xlsx-now';
+
+const xlsxStream = createXlsxStream({
+    columns,
+    sheetName: 'Widgets',
+    rows: [
+        { id: 1, name: 'Widget 1', price: 3.33 },
+        { id: 2, name: 'Widget 2', price: 6.66 },
+        { '#worksheet': 'Summary', columns: [{ name: 'metric', pk: true }, { name: 'value' }] },
+        { metric: 'rows', value: 2 },
+        { metric: 'total price', value: 9.99 },
+    ],
+});
+```
+
+The command carries the sheet's own configuration — `columns`, `freezeRows`,
+`freezeColumns` — and what it leaves out falls back to the writer options,
+which are the workbook's defaults. So a table split across sheets repeats
+nothing:
+
+```js
+rows: [
+    ...january,
+    { '#worksheet': 'February' },   // same columns, same freezes, new sheet
+    ...february,
+]
+```
+
+`columns: []` is how a sheet opts *out* of the columns the workbook declared:
+no header row, no freeze, rows of cells alone.
+
+Sent **before any row**, a command configures the first sheet rather than
+adding a second one — nothing is written until the first message arrives.
+That is why `sheetName` and `columns` are optional everywhere: a stream can
+declare itself entirely on the way in.
+
+```js
+rows: [
+    { '#worksheet': 'Widgets', columns, freezeColumns: 1 },
+    ...records,
+]
+```
+
+Sheet names are made to fit what Excel accepts, rather than refused: a name it
+would reject is a file that will not open, and by the time anyone finds out
+the rows are long gone. So the characters Excel forbids (`\ / ? * [ ] :`, and
+a leading or trailing `'`) are dropped, anything past 31 characters is cut, a
+sheet that arrives with no name gets `Sheet<n>`, and a name another sheet
+already took — which Excel compares without regard to case — gets a `(2)`, a
+`(3)`, and so on, with the number fitted inside the same 31 characters.
+
+#### How the workbook is assembled without knowing its sheets
+
+Two parts of an `.xlsx` have to name every worksheet: `[Content_Types].xml`
+and `xl/workbook.xml` (with its `.rels`). Neither can be written while sheets
+are still arriving — and `[Content_Types].xml`, per OPC, has to be the *first*
+part in the archive.
+
+The way out is that a zip's entries can be written in any order (the central
+directory comes last anyway), and that content types can be assigned by
+extension:
+
+- `[Content_Types].xml` goes out first, before any sheet exists, declaring
+  `<Default Extension="xml">` as the worksheet type and overriding it for the
+  only two `.xml` parts that are not worksheets, `workbook.xml` and
+  `styles.xml`. However many sheets arrive, they are already typed.
+- `xl/workbook.xml` and `xl/_rels/workbook.xml.rels` — the parts that list the
+  sheets by name — are written **last**, once no more of them can come.
+
+So the archive reads `[Content_Types].xml`, `_rels/.rels`, `xl/styles.xml`,
+one part per worksheet, and then the workbook that names them. Still one pass,
+still nothing buffered, and a workbook of a hundred sheets costs no more
+memory than a workbook of one.
+
 ### `new XlsxStream(...)` in a pipe chain
 
-A `TransformStream`: one row per chunk in, the file's bytes out. What a chunk
-is follows from the options — a record with `columns`, an array without —
-and the type says so, so a pipe chain that feeds it the wrong one does not
-compile.
+A `TransformStream`: one message per chunk in, the file's bytes out. A chunk
+is a row of cells, a record, or a `#worksheet` command — `SheetInput`, the one
+type every face of the writer takes.
 
 ```js
 import { XlsxStream } from 'xlsx-now';
@@ -354,8 +508,10 @@ the bare `fflate` — is mapped by an
 
 The public surface is `src/core/index.ts`, which exports `XlsxWriter`,
 `XlsxStream` and `createXlsxStream` plus the types callers need (`Column`,
-`Row`, `CellValue`, `CompressionLevel`), with the environment-specific faces
-under `src/node/index.ts` and `src/browser/index.ts`.
+`Row`, `CellValue`, `SheetInput`, `WorksheetCommand`, `LineCommand`,
+`RowOptions`, `CompressionLevel`) and the `WORKSHEET` and `LINE` keys
+themselves, with the environment-specific faces under `src/node/index.ts` and
+`src/browser/index.ts`.
 
 ```sh
 npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundle
@@ -480,7 +636,8 @@ npm install
 
 # Each example script runs `tsc` first, so no separate build step is needed.
 
-# Node: streams 200 simulated rows into out/example-node.xlsx
+# Node: streams 200 simulated rows into out/example-node.xlsx, plus a
+# second "Summary" sheet the same stream declares on its way out
 npm run example:node
 
 # Browser: serves the repo at http://localhost:8080/examples/browser/ —
@@ -521,7 +678,8 @@ with itself.
 
 It asserts the workbook side (header row bold, PK column `id` filled in both
 the header and the data rows, non-PK columns unstyled, the header row and the
-leading PK columns frozen, expected row count) and the container side (every entry at ZIP version 2.0, no ZIP64 record, worksheet
+leading PK columns frozen, expected row count, and no two sheets sharing a
+name) and the container side (every entry at ZIP version 2.0, no ZIP64 record, worksheet
 deflated, CRC recomputed from the inflated bytes, and a local header with bit
 3 set and zeroed sizes — the proof it was written without knowing the row
 count).
@@ -555,8 +713,10 @@ columns — fails the freeze check.
   follow-up, not a redesign.
 - **Confirmation in Excel itself.** The container is now shaped the way Office
   documents it wants (ZIP 2.0, deflate), and the files read back correctly
-  under `yauzl` and `exceljs`, but no file has been opened in a real Excel
-  installation from this environment.
+  under `yauzl` and `exceljs` — and a two-sheet file converts cleanly through
+  a headless LibreOffice Calc, which is a third reader and a stricter one
+  about the package than `exceljs` is. Still, no file has been opened in a
+  real Excel installation from this environment.
 - **Archives above 4 GB.** No ZIP64 is emitted, so an entry over 4 GB
   uncompressed would overflow silently. Unreachable in practice — Excel stops
   at 1,048,576 rows, which is roughly 250 MB of worksheet XML — but it is a

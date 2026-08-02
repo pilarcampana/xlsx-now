@@ -47,6 +47,32 @@ export function sheetHeaderXml(freeze: Freeze): string {
 }
 
 /**
+ * What a line can ask for beyond its cells. There is nowhere to put these on
+ * a bare row — an array is all cells, a record is all values — which is what
+ * the `#line` command is for.
+ */
+export interface RowOptions {
+    /** Height in points. Excel's own default is 15, and it is what applies without this. */
+    height?: number;
+    /** Keeps the row in the sheet but out of sight. */
+    hidden?: boolean;
+    /** Applies to the whole row, under whatever style its cells carry themselves. */
+    style?: CellStyle;
+}
+
+/** The attributes of a `<row>`, past its number. */
+function rowAttributes(options: RowOptions | undefined): string {
+    if (!options) return '';
+    let attributes = '';
+    // `customFormat` and `customHeight` are what tell Excel the row means it:
+    // without them the `s` and the `ht` next to them are ignored.
+    if (options.style) attributes += ` s="${styleIndex(options.style)}" customFormat="1"`;
+    if (options.height !== undefined) attributes += ` ht="${options.height}" customHeight="1"`;
+    if (options.hidden) attributes += ' hidden="1"';
+    return attributes;
+}
+
+/**
  * A `Date` is a value, not a wrapper: it is the one object a cell can be
  * without asking for a style.
  */
@@ -61,7 +87,7 @@ function isStyled(cell: Cell): cell is { value: CellValue; style?: CellStyle } {
  * explicit `{ value: undefined, style }` writes the styled cell too — the
  * wrapper is the caller asking for it.
  */
-export function cellRowXml(rowNumber: number, row: CellRow): string {
+export function cellRowXml(rowNumber: number, row: CellRow, options?: RowOptions): string {
     let cells = '';
     for (let i = 0; i < row.length; i++) {
         const cell = row[i];
@@ -71,5 +97,5 @@ export function cellRowXml(rowNumber: number, row: CellRow): string {
             ? cellXml(cell.value, ref, styleIndex(cell.style))
             : cellXml(cell, ref, styleIndex(undefined));
     }
-    return `<row r="${rowNumber}">${cells}</row>`;
+    return `<row r="${rowNumber}"${rowAttributes(options)}>${cells}</row>`;
 }

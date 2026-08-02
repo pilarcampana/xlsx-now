@@ -142,6 +142,84 @@ describe('a generated workbook, with the pk columns elsewhere', () => {
     });
 });
 
+describe('a workbook of several sheets, read back with exceljs', () => {
+    let workbook: ExcelJS.Workbook;
+
+    before(async () => {
+        // One stream, three sheets: the first named in the options, the other
+        // two by the commands that open them — one of them with columns of
+        // its own, the other with none at all.
+        const bytes = await collect(
+            createXlsxStream({
+                sheetName: 'People',
+                columns: COLUMNS,
+                rows: [
+                    RECORDS[0] as Row,
+                    { '#worksheet': 'Totals', columns: [{ name: 'label', pk: true }, { name: 'total' }] },
+                    { label: 'sum', total: 7.5 },
+                    { '#worksheet': 'Notas', columns: [], freezeRows: 0 },
+                    ['a note', 2],
+                    { '#line': 'empty' },
+                    { '#line': 'array', values: ['a tall title'], height: 30, style: { bold: true } },
+                    { '#line': 'sparse', values: { C: 'far right' } },
+                    { '#line': 'array', values: ['out of sight'], hidden: true },
+                ],
+            }),
+        );
+        workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+    });
+
+    it('carries every sheet, in the order the stream declared them', () => {
+        assert.deepEqual(
+            workbook.worksheets.map((sheet) => sheet.name),
+            ['People', 'Totals', 'Notas'],
+        );
+    });
+
+    it('sends every row to the sheet that was open when it arrived', () => {
+        const [people, totals, notas] = workbook.worksheets;
+        assert.equal(people?.rowCount, 2); // header + one record
+        assert.equal(totals?.rowCount, 2);
+        assert.equal(notas?.rowCount, 5); // no header of its own
+        assert.equal(totals?.getRow(2).getCell(2).value, 7.5);
+        assert.equal(notas?.getRow(1).getCell(1).value, 'a note');
+    });
+
+    it('reads back what a #line asked of the row itself', () => {
+        const notas = workbook.worksheets[2];
+        assert.ok(notas, 'the third sheet is missing');
+        // Row 2 is the empty line, so the title is row 3.
+        const title = notas.getRow(3);
+        assert.equal(title.getCell(1).value, 'a tall title');
+        assert.equal(title.height, 30);
+        assert.ok(title.font?.bold, 'the row style did not reach the row');
+        assert.equal(notas.getRow(5).hidden, true);
+    });
+
+    it('puts a sparse line at the column its letter names', () => {
+        const notas = workbook.worksheets[2];
+        const sparse = notas?.getRow(4);
+        assert.equal(sparse?.getCell(3).value, 'far right');
+        assert.equal(sparse?.getCell(1).value, null, 'the gap was filled in');
+    });
+
+    it('heads each sheet with its own columns, and styles them as its own', () => {
+        const totals = workbook.worksheets[1];
+        assert.equal(totals?.getRow(1).getCell(1).value, 'label');
+        assert.ok(totals?.getRow(1).getCell(1).font?.bold, 'the header is not bold');
+        assert.ok(isPkFilled(totals.getRow(2).getCell(1)), 'the pk cell is not filled');
+    });
+
+    it('freezes each sheet on its own terms', () => {
+        const [people, totals, notas] = workbook.worksheets;
+        assert.equal(view(people as ExcelJS.Worksheet).ySplit, 1);
+        assert.equal(view(totals as ExcelJS.Worksheet).ySplit, 1);
+        assert.equal(view(totals as ExcelJS.Worksheet).xSplit, 1);
+        assert.notEqual(view(notas as ExcelJS.Worksheet).state, 'frozen');
+    });
+});
+
 describe('a generated container, read back with yauzl', () => {
     it('is a ZIP Office can open, written without knowing the sizes', async () => {
         const entries = await readZipEntries(await generate(COLUMNS, RECORDS));

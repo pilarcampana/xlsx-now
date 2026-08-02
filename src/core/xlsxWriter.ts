@@ -1,11 +1,28 @@
-import { columnsMode } from './columns.js';
-import { contentTypesXml, rootRelsXml, workbookRelsXml, workbookXml } from './parts.js';
-import { cellRowXml, sheetHeaderXml, SHEET_FOOTER } from './sheet.js';
+import {
+    checkRecord,
+    isLineCommand,
+    isWorksheetCommand,
+    lineCells,
+    lineRecord,
+    noColumnsError,
+    WORKSHEET,
+    type LineCommand,
+    type SheetInput,
+    type SheetOptions,
+} from './command.js';
+import { columnsMode, type ColumnsMode } from './columns.js';
+import {
+    contentTypesXml,
+    rootRelsXml,
+    workbookRelsXml,
+    workbookXml,
+    worksheetPart,
+    sheetName,
+} from './parts.js';
+import { cellRowXml, sheetHeaderXml, SHEET_FOOTER, type RowOptions } from './sheet.js';
 import { stylesXml } from './styles.js';
-import type { CellRow, Column, Row } from './types.js';
+import type { CellRow, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
-
-const WORKSHEET_PART = 'xl/worksheets/sheet1.xml';
 
 /**
  * How much worksheet XML is accumulated before it is handed to the zip.
@@ -21,78 +38,56 @@ const PUSH_BATCH_CHARS = 64 * 1024;
 
 const encoder = new TextEncoder();
 
-export interface XlsxWriterOptions {
+export interface XlsxWriterOptions extends SheetOptions {
     /**
-     * Turns on the columns mode: the sheet gets a header row of column names,
-     * every row is an incoming record read by key, and the freezes below
-     * default to the header row and the leading pk columns. Left out, rows are
-     * arrays of cells and there is nothing to declare.
+     * Name of the first worksheet; defaults to `Sheet1`. Every other sheet is
+     * named by the `#worksheet` command that opens it — and so is the first
+     * one, when a command arrives before any row. Whatever the name, it is
+     * made to fit what Excel accepts; see `sheetName` in `parts.ts`.
      */
-    columns?: readonly Column[];
     sheetName?: string;
     /**
      * Deflate effort, 0-9. Defaults to 6; `0` writes the parts uncompressed,
      * which is faster but leaves the file roughly ten times bigger.
      */
     compressionLevel?: CompressionLevel;
-    /** Rows fixed at the top of the sheet. Defaults to 0, or to 1 with `columns`. */
-    freezeRows?: number;
-    /**
-     * Columns fixed at the left of the sheet. Defaults to 0, or with
-     * `columns` to however many leading ones are pks.
-     */
-    freezeColumns?: number;
 }
 
-/** Which kind of row a given set of options takes. */
-export type RowOf<O extends XlsxWriterOptions> = O extends { columns: readonly Column[] }
-    ? Row
-    : CellRow;
-
 /**
- * Writes a styled `.xlsx`, one row at a time, handing every byte to `sink` as
- * soon as it exists. No I/O and no streams: this is the shared engine the
- * environment-specific stream classes drive, and the only thing it ever holds
- * is the batch of worksheet XML on its way to the zip.
+ * Writes a styled `.xlsx`, one message at a time, handing every byte to
+ * `sink` as soon as it exists. No I/O and no streams: this is the shared
+ * engine the environment-specific stream classes drive, and the only thing it
+ * ever holds is the batch of worksheet XML on its way to the zip.
+ *
+ * A message is a row — an array of cells, or a record read by the sheet's
+ * columns — or a `#worksheet` command, which closes the sheet being written
+ * and opens the next one. That is what decides the order of the parts:
+ * everything that has to name the sheets is written at the end, once no more
+ * of them can arrive.
  */
-export class XlsxWriter<O extends XlsxWriterOptions = XlsxWriterOptions> {
+export class XlsxWriter {
     private readonly zip: ZipWriter;
-    private readonly toCellRow: (row: RowOf<O>) => CellRow;
-    private batch: string;
+    /** What every sheet starts from, before its own command overrides it. */
+    private readonly defaults: XlsxWriterOptions;
+    /** The sheets so far, in order; the last of them may still be open. */
+    private readonly sheetNames: string[] = [];
+    /** The columns of the sheet being written, if it has any. */
+    private mode: ColumnsMode | undefined;
+    private open = false;
+    private batch = '';
     private rowNumber = 1;
 
-    constructor(sink: (bytes: Uint8Array) => void, options: O) {
-        const {
-            columns,
-            sheetName = 'Sheet1',
-            compressionLevel = DEFAULT_COMPRESSION_LEVEL,
-        } = options;
-        const mode = columns ? columnsMode(columns) : undefined;
-        // Which of the two modes is running is the whole of the difference
-        // from here on. `RowOf<O>` is what the caller is held to, and no
-        // runtime check on the options narrows it — hence the two casts.
-        this.toCellRow = mode
-            ? (row) => mode.toCellRow(row as Row)
-            : (row) => row as CellRow;
-        const freeze = {
-            rows: options.freezeRows ?? mode?.freeze.rows ?? 0,
-            columns: options.freezeColumns ?? mode?.freeze.columns ?? 0,
-        };
-        this.zip = new ZipWriter(sink, compressionLevel);
+    constructor(sink: (bytes: Uint8Array) => void, options: XlsxWriterOptions = {}) {
+        this.defaults = options;
+        this.zip = new ZipWriter(sink, options.compressionLevel ?? DEFAULT_COMPRESSION_LEVEL);
         this.discardOnFailure(() => {
+            // The parts that name no sheet, and so can go out before there is
+            // one. The first worksheet waits for the first message instead: it
+            // may be a command, and then that command is what configures it.
             this.zip.writeEntry('[Content_Types].xml', contentTypesXml());
             this.zip.writeEntry('_rels/.rels', rootRelsXml());
-            this.zip.writeEntry('xl/workbook.xml', workbookXml(sheetName));
             this.zip.writeEntry('xl/styles.xml', stylesXml());
-            this.zip.writeEntry('xl/_rels/workbook.xml.rels', workbookRelsXml());
-            // The worksheet stays open for the whole life of the writer: it is
-            // the one part whose length nobody knows yet.
-            this.zip.startEntry(WORKSHEET_PART);
         });
-        this.batch = sheetHeaderXml(freeze);
-        // Enough columns and the header row alone fills a batch, so writing it
-        // can reach the zip and fail there like any other row does.
-        if (mode) this.discardOnFailure(() => this.writeCellRow(mode.headerRow));
     }
 
     /**
@@ -115,22 +110,116 @@ export class XlsxWriter<O extends XlsxWriterOptions = XlsxWriterOptions> {
         this.batch = '';
     }
 
-    private writeCellRow(row: CellRow): void {
-        this.batch += cellRowXml(this.rowNumber, row);
+    private writeCellRow(row: CellRow, options?: RowOptions): void {
+        this.batch += cellRowXml(this.rowNumber, row, options);
         this.rowNumber++;
         if (this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
     }
 
-    writeRow(row: RowOf<O>): void {
-        this.discardOnFailure(() => this.writeCellRow(this.toCellRow(row)));
+    /**
+     * Starts a worksheet part, and its header row when it has columns.
+     * `sheet` is the command that opened it, or the writer options for the
+     * first one; either way, whatever it leaves out falls back to the
+     * options, and then to what the columns imply.
+     */
+    private openSheet(asked: unknown, sheet: SheetOptions): void {
+        const name = sheetName(asked, this.sheetNames, this.sheetNames.length + 1);
+        const columns = sheet.columns ?? this.defaults.columns;
+        // A header row with no column in it is nobody's intention, so an
+        // empty list reads as the rows mode — which is how a sheet opts out
+        // of the columns the workbook declared.
+        const mode = columns?.length ? columnsMode(columns) : undefined;
+        const freeze = {
+            rows: sheet.freezeRows ?? this.defaults.freezeRows ?? mode?.freeze.rows ?? 0,
+            columns:
+                sheet.freezeColumns ?? this.defaults.freezeColumns ?? mode?.freeze.columns ?? 0,
+        };
+
+        this.sheetNames.push(name);
+        // The worksheet stays open until the next command or `finish`: it is
+        // the one part whose length nobody knows yet.
+        this.zip.startEntry(worksheetPart(this.sheetNames.length));
+        this.batch = sheetHeaderXml(freeze);
+        this.rowNumber = 1;
+        this.mode = mode;
+        this.open = true;
+        // Enough columns and the header row alone fills a batch, so writing it
+        // can reach the zip and fail there like any other row does.
+        if (mode) this.writeCellRow(mode.headerRow);
     }
 
-    /** Closes the worksheet and the archive. No row goes in after this. */
+    private closeSheet(): void {
+        this.batch += SHEET_FOOTER;
+        this.pushBatch();
+        this.zip.endEntry();
+        this.open = false;
+    }
+
+    /** The first sheet, as the writer options alone describe it. */
+    private openFirstSheet(): void {
+        this.openSheet(this.defaults.sheetName, this.defaults);
+    }
+
+    /** One record, read by the sheet's columns — the one line that needs them. */
+    private recordCells(record: Row): CellRow {
+        if (!this.mode) throw noColumnsError();
+        return this.mode.toCellRow(record);
+    }
+
+    /**
+     * A record is read by the sheet's columns, an array is already the row it
+     * will be written as. The two travel together: which one a message is
+     * says nothing about what the next one has to be.
+     */
+    private autodetectedCells(input: CellRow | Row): CellRow {
+        if (Array.isArray(input)) return input as CellRow;
+        const record = input as Row;
+        // What claims no command has to be a record — and a key that starts
+        // with `#` says it meant to claim one.
+        checkRecord(record);
+        return this.recordCells(record);
+    }
+
+    /**
+     * A line said outright: its cells as the kind describes them, and the
+     * command itself as what the row asks for past them — a `LineCommand`
+     * *is* a `RowOptions`, so there is nothing to pick out of it.
+     */
+    private writeLineCommand(command: LineCommand): void {
+        const cells = lineCells(command) ?? this.recordCells(lineRecord(command));
+        this.writeCellRow(cells, command);
+    }
+
+    /** One message: a row of cells, a record, or a command. */
+    writeRow(input: SheetInput): void {
+        this.discardOnFailure(() => {
+            if (isWorksheetCommand(input)) {
+                // Before any row, the command *is* the first sheet rather
+                // than a second one.
+                if (this.open) this.closeSheet();
+                this.openSheet(input[WORKSHEET], input);
+                return;
+            }
+            if (!this.open) this.openFirstSheet();
+            if (isLineCommand(input)) this.writeLineCommand(input);
+            else this.writeCellRow(this.autodetectedCells(input));
+        });
+    }
+
+    /** Closes the last worksheet and the archive. No message goes in after this. */
     finish(): void {
         this.discardOnFailure(() => {
-            this.batch += SHEET_FOOTER;
-            this.pushBatch();
-            this.zip.endEntry();
+            // A workbook with no sheet in it is not a workbook, so a writer
+            // nobody gave anything to still closes with one empty sheet.
+            if (!this.open) this.openFirstSheet();
+            this.closeSheet();
+            // Now — and only now — every sheet is known, so the parts that
+            // have to name them can be written.
+            this.zip.writeEntry('xl/workbook.xml', workbookXml(this.sheetNames));
+            this.zip.writeEntry(
+                'xl/_rels/workbook.xml.rels',
+                workbookRelsXml(this.sheetNames.length),
+            );
             this.zip.end();
         });
     }

@@ -100,3 +100,33 @@ describe('cellRowXml', () => {
         );
     });
 });
+
+describe('cellRowXml: what the row itself asks for', () => {
+    it('adds nothing when it asks for nothing', () => {
+        assert.equal(cellRowXml(1, [], {}), '<row r="1"></row>');
+        assert.equal(cellRowXml(1, [], { hidden: false }), '<row r="1"></row>');
+    });
+
+    it('marks a height as custom, which is what makes Excel apply it', () => {
+        assert.equal(cellRowXml(1, [], { height: 22 }), '<row r="1" ht="22" customHeight="1"></row>');
+    });
+
+    it('hides the row', () => {
+        assert.equal(cellRowXml(1, [], { hidden: true }), '<row r="1" hidden="1"></row>');
+    });
+
+    it('styles the whole row, under whatever its cells carry', () => {
+        assert.equal(
+            cellRowXml(1, [{ value: 'x', style: { highlight: true } }], { style: { bold: true } }),
+            '<row r="1" s="1" customFormat="1">' +
+                '<c r="A1" t="inlineStr" s="2"><is><t xml:space="preserve">x</t></is></c></row>',
+        );
+    });
+
+    it('takes all three at once', () => {
+        assert.equal(
+            cellRowXml(4, [], { height: 8, hidden: true, style: { bold: true, highlight: true } }),
+            '<row r="4" s="3" customFormat="1" ht="8" customHeight="1" hidden="1"></row>',
+        );
+    });
+});

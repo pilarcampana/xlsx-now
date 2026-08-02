@@ -30,6 +30,22 @@ export function cellRef(colIndex: number, rowNumber: number): string {
     return `${columnLetters(colIndex)}${rowNumber}`;
 }
 
+/**
+ * Column letters back to a 0-based index — `columnLetters` the other way
+ * round, for the coordinates a sparse line is written by. Returns `undefined`
+ * for anything that is not a column: the caller knows what to say about it.
+ */
+export function columnIndex(letters: string): number | undefined {
+    if (!letters) return undefined;
+    let n = 0;
+    for (let i = 0; i < letters.length; i++) {
+        const code = letters.charCodeAt(i) & ~32; // upper-cases a letter, and only a letter
+        if (code < 65 || code > 90) return undefined;
+        n = n * 26 + (code - 64);
+    }
+    return n - 1;
+}
+
 // Renders a single <c> element. `styleIndex` is a 0-based index into
 // styles.xml's <cellXfs>, or 0 (falsy) for the default style.
 export function cellXml(value: CellValue, ref: string, styleIndex: StyleIndex): string {

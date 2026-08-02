@@ -109,6 +109,8 @@ async function checkContainer(path: string): Promise<ContainerReport> {
 }
 
 interface WorkbookReport {
+    /** Every sheet the workbook declares, in order — the first one is checked. */
+    sheetNames: string[];
     rows: number;
     header: string[];
     lastName: unknown;
@@ -150,6 +152,11 @@ async function checkWorkbook(path: string, expectedRows: number | undefined): Pr
     await workbook.xlsx.readFile(path);
     const sheet = workbook.worksheets[0];
     check(sheet, 'the workbook has no worksheets');
+    const sheetNames = workbook.worksheets.map((each) => each.name);
+    check(
+        new Set(sheetNames.map((name) => name.toLowerCase())).size === sheetNames.length,
+        `two sheets share a name: ${sheetNames.join(', ')}`,
+    );
 
     const headerRow = sheet.getRow(1);
     const header: string[] = [];
@@ -180,6 +187,7 @@ async function checkWorkbook(path: string, expectedRows: number | undefined): Pr
     }
 
     return {
+        sheetNames,
         rows: sheet.rowCount,
         header,
         lastName: sheet.getRow(sheet.rowCount).getCell(2).value,
@@ -204,8 +212,9 @@ async function main(): Promise<void> {
 
     console.log(`OK  ${path}`);
     console.log(`    parts        ${container.names.length}: ${container.names.join(', ')}`);
+    console.log(`    sheets       ${workbook.sheetNames.length}: ${workbook.sheetNames.join(', ')}`);
     console.log(
-        `    rows         ${workbook.rows} (header + ${workbook.rows - 1} data), ` +
+        `    rows         ${workbook.rows} in the first sheet (header + ${workbook.rows - 1} data), ` +
             `last name ${JSON.stringify(workbook.lastName)}`,
     );
     console.log(`    columns      ${JSON.stringify(workbook.header)}`);
