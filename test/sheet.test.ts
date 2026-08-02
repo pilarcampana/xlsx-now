@@ -255,11 +255,15 @@ describe('sheetHeaderXml: the columns of the sheet', () => {
 });
 
 describe('sheetHeaderXml: the widths a sheet measured for itself', () => {
+    /** One column's measured width, at the position it was measured in. */
+    function only(index: number, width: number): number[] {
+        const widths: number[] = [];
+        widths[index] = width;
+        return widths;
+    }
+
     /** Just the `<cols>`, out of what the formats say and what the cells measured. */
-    function measured(
-        autoWidths: readonly (number | undefined)[],
-        columnFormats?: ColumnFormats,
-    ): string {
+    function measured(autoWidths: readonly number[], columnFormats?: ColumnFormats): string {
         const xml = sheetHeaderXml({ rows: 0, columns: 0 }, new StyleTable(), columnFormats, autoWidths);
         return /<cols>.*<\/cols>/.exec(xml)?.[0] ?? '';
     }
@@ -269,7 +273,9 @@ describe('sheetHeaderXml: the widths a sheet measured for itself', () => {
     });
 
     it('leaves out the columns nothing was written in', () => {
-        assert.equal(measured([undefined, 12]), cols([undefined, { width: 12 }]));
+        // What the meter hands over is sparse: a column that measured nothing
+        // is a hole, not a zero and not an undefined.
+        assert.equal(measured(only(1, 12)), cols([undefined, { width: 12 }]));
         assert.equal(measured([]), '');
     });
 
@@ -282,9 +288,9 @@ describe('sheetHeaderXml: the widths a sheet measured for itself', () => {
     });
 
     it('writes both sources left to right, as one <cols>', () => {
-        assert.equal(
-            measured([undefined, undefined, 3], { A: { width: 8 } }),
-            cols([{ width: 8 }, undefined, { width: 3 }]),
-        );
+        // The measured column comes after the declared one however the two
+        // were given: the layout is one array, by column, and that is the order.
+        assert.equal(measured(only(2, 3), { A: { width: 8 } }), cols([{ width: 8 }, undefined, { width: 3 }]));
+        assert.equal(measured(only(0, 8), { C: { width: 3 } }), cols([{ width: 8 }, undefined, { width: 3 }]));
     });
 });

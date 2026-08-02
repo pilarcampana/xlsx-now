@@ -91,16 +91,19 @@ export class XlsxWriter {
     private readonly sheetNames: string[] = [];
     /** The columns of the sheet being written, if it has any. */
     private mode: ColumnsMode | undefined;
-    /** What the sheet's cells are measuring, when it sizes its columns by them. */
-    private widths: WidthMeter | undefined;
     /**
-     * The header of a sheet whose columns are being measured: it cannot be
-     * written until the sheet closes, so what it will be made of waits here —
-     * the meter included — and the rows pile up behind it.
+     * What the sheet's cells measure into. Every sheet has one; a sheet with
+     * no `autoWidthMax` gets a meter that measures nothing.
      */
-    private pendingHeader:
-        | { freeze: Freeze; columnFormats: ColumnFormats | undefined; widths: WidthMeter }
-        | undefined;
+    private widths = new WidthMeter(undefined);
+    /**
+     * What the header of the sheet being written will be made of. Opening a
+     * sheet does not write it: `<cols>` carries widths the cells may still be
+     * measuring, so the header is put together — and the worksheet part
+     * started — at the first moment the sheet's bytes have to go out, which is
+     * `pushBatch`.
+     */
+    private pendingHeader: { freeze: Freeze; columnFormats: ColumnFormats | undefined } | undefined;
     private open = false;
     private batch = '';
     private rowNumber = 1;
@@ -133,8 +136,25 @@ export class XlsxWriter {
         }
     }
 
+    /**
+     * The batch, out to the zip — and, the first time a sheet gets here, the
+     * header and the worksheet part to put it in. The part is started at this
+     * point and not when the sheet was opened, so that everything the header
+     * says is settled by the time it is written: `<cols>` goes before the
+     * first row and carries widths the cells may have been measuring.
+     */
     private pushBatch(): void {
-        if (!this.batch) return;
+        const pending = this.pendingHeader;
+        if (pending) {
+            this.pendingHeader = undefined;
+            // The worksheet stays open until the next command or `finish`: it
+            // is the one part whose length nobody knows yet.
+            this.zip.startEntry(worksheetPart(this.sheetNames.length));
+            const widths = this.widths.columnWidths();
+            this.batch =
+                sheetHeaderXml(pending.freeze, this.styles, pending.columnFormats, widths) +
+                this.batch;
+        }
         this.zip.push(encoder.encode(this.batch));
         this.batch = '';
     }
@@ -142,14 +162,14 @@ export class XlsxWriter {
     private writeCellRow(row: CellRow, options?: RowOptions): void {
         this.batch += cellRowXml(this.rowNumber, row, this.styles, options, this.widths);
         this.rowNumber++;
-        // A sheet being measured has nowhere to push to: its `<cols>` is
-        // written from rows that have not arrived yet, so the whole worksheet
-        // waits until it closes.
-        if (!this.widths && this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
+        // A sheet that is measuring itself has nowhere to push to: its `<cols>`
+        // is written from rows that have not arrived yet, so it waits for its
+        // last one. Any other sheet goes out as it is written.
+        if (!this.widths.measures && this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
     }
 
     /**
-     * Starts a worksheet part, and its header row when it has columns.
+     * Opens a worksheet, and writes its header row when it has columns.
      * `sheet` is the command that opened it, or the writer options for the
      * first one; either way, whatever it leaves out falls back to the
      * options, and then to what the columns imply.
@@ -170,19 +190,9 @@ export class XlsxWriter {
         };
 
         this.sheetNames.push(name);
-        this.widths = autoWidthMax === undefined ? undefined : new WidthMeter(autoWidthMax);
-        if (this.widths) {
-            // Nothing of this sheet can go out yet: `<cols>` is written before
-            // the first row and the widths come from the last one.
-            this.pendingHeader = { freeze, columnFormats, widths: this.widths };
-            this.batch = '';
-        } else {
-            // The worksheet stays open until the next command or `finish`: it
-            // is the one part whose length nobody knows yet.
-            this.zip.startEntry(worksheetPart(this.sheetNames.length));
-            this.pendingHeader = undefined;
-            this.batch = sheetHeaderXml(freeze, this.styles, columnFormats);
-        }
+        this.widths = new WidthMeter(autoWidthMax);
+        this.pendingHeader = { freeze, columnFormats };
+        this.batch = '';
         this.rowNumber = 1;
         this.mode = mode;
         this.open = true;
@@ -192,18 +202,9 @@ export class XlsxWriter {
     }
 
     private closeSheet(): void {
+        // Whatever is left of the sheet, header included when nothing of it
+        // has gone out yet — a sheet with no row in it is still a sheet.
         this.batch += SHEET_FOOTER;
-        if (this.pendingHeader) {
-            // Now the columns have been measured, so the header they were
-            // waiting for can be written and the sheet goes into the archive
-            // whole, in the place it would have taken anyway.
-            const { freeze, columnFormats, widths } = this.pendingHeader;
-            this.batch =
-                sheetHeaderXml(freeze, this.styles, columnFormats, widths.columnWidths()) +
-                this.batch;
-            this.pendingHeader = undefined;
-            this.zip.startEntry(worksheetPart(this.sheetNames.length));
-        }
         this.pushBatch();
         this.zip.endEntry();
         this.open = false;

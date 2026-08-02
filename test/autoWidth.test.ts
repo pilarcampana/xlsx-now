@@ -61,6 +61,20 @@ describe('WidthMeter', () => {
         assert.equal(widths[1], undefined);
     });
 
+    it('measures nothing when it was given no maximum', () => {
+        // Every sheet has a meter; a sheet with no `autoWidthMax` gets one
+        // that measures nothing, so nobody downstream has to ask whether it
+        // has one at all.
+        const meter = new WidthMeter(undefined);
+        assert.equal(meter.measures, false);
+        meter.see(0, 'a line of text');
+        assert.deepEqual([...meter.columnWidths()], []);
+    });
+
+    it('says it measures when it was given one', () => {
+        assert.equal(new WidthMeter(10).measures, true);
+    });
+
     it('refuses a maximum no column can be sized by', () => {
         for (const max of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
             assert.throws(() => new WidthMeter(max), /autoWidthMax/);

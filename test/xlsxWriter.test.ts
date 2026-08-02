@@ -256,6 +256,18 @@ describe('XlsxWriter: the #worksheet command', () => {
         assert.ok(vacia.endsWith('</worksheet>'));
     });
 
+    it('leaves the first sheet blank when one command follows another', async () => {
+        const { sheetNames, sheets } = await readXlsx(
+            write({}, [{ '#worksheet': 'hoja1' }, { '#worksheet': 'hoja2' }, ['a']]),
+        );
+        // The first command is the first sheet rather than a second one, so
+        // the second command closes a sheet nothing was written in — which is
+        // a sheet in the workbook all the same.
+        assert.deepEqual(sheetNames, ['hoja1', 'hoja2']);
+        assert.ok(sheets[0]?.includes('<sheetData></sheetData>'), sheets[0] ?? 'no first sheet');
+        assert.equal(sheetRows(sheets[1] ?? '').length, 1);
+    });
+
     it('names the first sheet after the command, not after the options', async () => {
         const { sheetNames } = await readXlsx(
             write({ sheetName: 'Ignorada' }, [{ '#worksheet': 'La primera' }, ['a']]),
@@ -604,6 +616,22 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         // `undefined` is a field the command left out, so the workbook's own
         // max is what the third sheet gets.
         assert.ok(sheets[2]?.includes('width="6"'), sheets[2] ?? 'no third sheet');
+    });
+
+    it('leaves a blank sheet behind when one #worksheet follows another', async () => {
+        const { sheetNames, sheets } = await readXlsx(
+            write({ autoWidthMax: 20 }, [
+                { '#worksheet': 'hoja1' },
+                { '#worksheet': 'hoja2' },
+                ['abc'],
+            ]),
+        );
+        // The first command opens the first sheet; the second one closes it
+        // with nothing in it, which is a sheet in the workbook all the same.
+        assert.deepEqual(sheetNames, ['hoja1', 'hoja2']);
+        assert.ok(sheets[0]?.includes('<sheetData></sheetData>'), sheets[0] ?? 'no first sheet');
+        assert.ok(!sheets[0]?.includes('cols'), sheets[0] ?? 'no first sheet');
+        assert.ok(sheets[1]?.includes('width="3"'), sheets[1] ?? 'no second sheet');
     });
 
     it('writes the sheet whole, in the place it would have taken anyway', async () => {

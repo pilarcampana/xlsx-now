@@ -39,21 +39,28 @@ function badMaxError(max: number): Error {
  * column it lands in, and the column keeps the longest of them, up to the
  * maximum it was opened with.
  *
- * One meter per worksheet — the widths are the sheet's own, and so is the
- * `<cols>` they end up in.
+ * One meter per worksheet, and every worksheet has one — a sheet with no
+ * `autoWidthMax` gets a meter that measures nothing, so nothing downstream
+ * has to ask whether there is one. What it does have to ask is `measures`:
+ * that is what says whether the sheet can go out as it is written or has to
+ * wait for its last row.
  */
 export class WidthMeter {
     /** The longest cell seen per 0-based column; a hole is a column with nothing in it. */
     private readonly widths: number[] = [];
     private readonly max: number;
+    /** Whether this meter was given a maximum at all — a sheet's own answer. */
+    readonly measures: boolean;
 
-    constructor(max: number) {
-        if (!Number.isFinite(max) || max <= 0) throw badMaxError(max);
-        this.max = max;
+    constructor(max: number | undefined) {
+        if (max !== undefined && !(Number.isFinite(max) && max > 0)) throw badMaxError(max);
+        this.measures = max !== undefined;
+        this.max = max ?? 0;
     }
 
     /** One cell, in the column it was written in. */
     see(column: number, value: CellValue): void {
+        if (!this.measures) return;
         const length = cellTextLength(value);
         if (!length) return;
         const width = length > this.max ? this.max : length;
@@ -62,10 +69,10 @@ export class WidthMeter {
 
     /**
      * What every column measured, by 0-based column. A column nobody wrote
-     * anything in is left out — it keeps whatever `columnFormats` says about
-     * it, and Excel's default width when that says nothing either.
+     * anything in is a hole — it keeps whatever `columnFormats` says about it,
+     * and Excel's default width when that says nothing either.
      */
-    columnWidths(): readonly (number | undefined)[] {
+    columnWidths(): readonly number[] {
         return this.widths;
     }
 }
