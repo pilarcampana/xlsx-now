@@ -1,12 +1,12 @@
-import type { ForAwaitable, Row } from './types.js';
-import { XlsxWriter, type XlsxWriterOptions } from './xlsxWriter.js';
+import type { ForAwaitable } from './types.js';
+import { XlsxWriter, type RowOf, type XlsxWriterOptions } from './xlsxWriter.js';
 
-export interface CreateXlsxStreamOptions extends XlsxWriterOptions {
-    rows: ForAwaitable<Row>;
-}
+export type CreateXlsxStreamOptions<O extends XlsxWriterOptions = XlsxWriterOptions> = O & {
+    rows: ForAwaitable<RowOf<O>>;
+};
 
 /** One iterator for both kinds of source; `await` on a sync result is free. */
-function iterate(rows: ForAwaitable<Row>): AsyncIterator<Row> | Iterator<Row> {
+function iterate<T>(rows: ForAwaitable<T>): AsyncIterator<T> | Iterator<T> {
     return Symbol.asyncIterator in rows
         ? rows[Symbol.asyncIterator]()
         : rows[Symbol.iterator]();
@@ -22,17 +22,18 @@ function iterate(rows: ForAwaitable<Row>): AsyncIterator<Row> | Iterator<Row> {
  * are read only when the consumer asks for more bytes, which is what keeps
  * memory flat however many of them are coming.
  */
-export function createXlsxStream({
-    rows,
-    ...options
-}: CreateXlsxStreamOptions): ReadableStream<Uint8Array> {
-    const iterator = iterate(rows);
-    let writer!: XlsxWriter;
+export function createXlsxStream<O extends XlsxWriterOptions>(
+    options: CreateXlsxStreamOptions<O>,
+): ReadableStream<Uint8Array> {
+    const iterator = iterate(options.rows);
+    let writer!: XlsxWriter<O>;
     let emitted = false;
 
     return new ReadableStream<Uint8Array>({
         start(controller) {
-            writer = new XlsxWriter((bytes) => {
+            // `rows` rides along in the options the writer gets; it reads the
+            // ones it knows and this is the only place the extra one exists.
+            writer = new XlsxWriter<O>((bytes) => {
                 emitted = true;
                 controller.enqueue(bytes);
             }, options);

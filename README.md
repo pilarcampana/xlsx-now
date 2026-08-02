@@ -31,8 +31,8 @@ and streamable) are both reused here.
 
 ## Architecture
 
-The public API is a **stream transform**: records go in one side, one per
-chunk, and the bytes of the `.xlsx` come out the other. It is meant to sit in
+The public API is a **stream transform**: rows go in one side, one per chunk,
+and the bytes of the `.xlsx` come out the other. It is meant to sit in
 the middle of a pipe, not at the head of one.
 
 It is **Web Streams throughout**, in Node as much as in the browser. Node has
@@ -43,8 +43,8 @@ one class, one behaviour, both environments:
 | export | what it is |
 | --- | --- |
 | `XlsxStream` | a `TransformStream<Row, Uint8Array>`, for `.pipeThrough()` |
-| `createXlsxStream` | a `ReadableStream` that *pulls* the records, for sources that aren't streams |
-| `XlsxWriter` | the engine under both: `writeRow(record)`, `finish()`, no streams at all |
+| `createXlsxStream` | a `ReadableStream` that *pulls* the rows, for sources that aren't streams |
+| `XlsxWriter` | the engine under both: `writeRow(row)`, `finish()`, no streams at all |
 
 `XlsxWriter` knows nothing about streams — every byte goes to a sink as soon
 as it exists — and the two stream faces are a dozen lines each, because the
@@ -62,13 +62,18 @@ they come for free:
   written, in order.
 
 All four are verified, on every face, not assumed. Underneath, the writer is
-split in two layers:
+split in layers:
 
 - **XLSX XML generation — no I/O at all.** `styles.ts` defines a small style
-  registry (`DEFAULT`, `HEADER`, `PK`, `PK_HEADER`) and `sheet.ts` turns one
-  record into one `<row>` — plain synchronous string functions, nothing
-  buffered. It's just string generation, which is half of what makes this
-  isomorphic.
+  registry — a bitmask of the two attributes a cell can ask for, `bold` and
+  `highlight`, so the four combinations are the four entries `styles.xml`
+  already carries — and `sheet.ts` turns one row of cells into one `<row>`.
+  Plain synchronous string functions, nothing buffered. It's just string
+  generation, which is half of what makes this isomorphic.
+- **The columns mode, on top of that.** `columns.ts` is the whole of it: given
+  the columns it returns the freeze they imply, the header row, and the
+  function that reads one record by key into a row of cells. Nothing below it
+  knows what a column is.
 - **The zip container — `fflate`, wrapped in `zip.ts`.** See
   [The zip container](#the-zip-container) for why that library. `zip.ts` is a
   thin adapter, not a zip implementation: `ZipWriter` takes bytes in and hands
@@ -127,9 +132,16 @@ to generate those"*. Files produced before this change declared version 4.5
 
 ## Usage
 
-Every form takes the same static configuration in its constructor — columns,
-sheet name, compression — and then receives the records. `columns` is the only
-required option.
+Every form takes the same static configuration in its constructor — sheet
+name, compression, what the sheet freezes and, in the columns mode, the
+columns — and then receives the rows. Nothing is required.
+
+There are two ways to say what a row is, and the first is the second one with
+a header on top.
+
+### The columns mode
+
+`columns` declares the sheet, and every row is a record read by key.
 
 ```js
 const columns = [
@@ -143,6 +155,57 @@ Each column is `name` (the header text), `key` (the property read from every
 record, defaulting to `name`) and `pk`, which marks it as a primary key: pk
 columns get the highlight fill, and they are also what the sheet freezes.
 
+The sheet gets a bold header row of the column names, and every record becomes
+one row. That is all this mode is — it is written *as* the rows mode below,
+in `columns.ts`, and nothing underneath it knows what a column is.
+
+### The rows mode
+
+No columns, no keys: a row is an array, and the position is the column.
+
+```js
+import { createXlsxStream } from 'xlsx-now';
+
+const xlsxStream = createXlsxStream({
+    freezeRows: 1,
+    freezeColumns: 1,
+    rows: [
+        [{ value: 'id', style: { bold: true } }, { value: 'name', style: { bold: true } }],
+        [1, 'Widget 1'],
+        [2, 'Widget 2', undefined, new Date()],
+    ],
+});
+```
+
+A position holds either a value — the same `string | number | boolean | Date |
+null` the columns mode takes — or `{ value, style }`. `style` is
+`{ bold?, highlight? }`: the same two attributes the header row and the pk
+columns are made of, and the only two `styles.xml` carries. They are a closed
+set because the style table is written into the archive before the first row
+arrives, so nothing can be registered later; every combination of the two is
+already in it.
+
+Three things a position can be, and they are not the same thing:
+
+| in the array | in the sheet |
+| --- | --- |
+| `undefined` (or a hole, `[1, , 3]`) | no cell at all |
+| `null` or `''` | an empty cell, written only if it carries a style |
+| `{ value: undefined, style }` | the styled cell — the wrapper is the ask |
+
+Rows can be as long or short as they happen to be; nothing has to line up.
+
+### Frozen rows and columns
+
+`freezeRows` and `freezeColumns` fix that many rows at the top and columns at
+the left, so they stay on screen as the sheet scrolls. Both default to 0 — and
+in the columns mode, to what the columns imply, which is the section below.
+Given explicitly they win, in either mode.
+
+A freeze is a single split at one position: it always takes everything before
+it along, which is why these are two counts and not a choice of which rows or
+columns to fix.
+
 ### Frozen header and pk columns
 
 The header row is always frozen, so it stays on screen as the sheet scrolls,
@@ -155,13 +218,17 @@ column can't be frozen without dragging every column before it along. When the
 pks are mixed in among the rest, only the header row is frozen. Same when
 *every* column is a pk: freezing all of them would leave nothing to scroll.
 
-Nothing to configure: it follows from `pk` and the column order, and it costs
-one `<pane>` element at the top of the worksheet, before the first row.
+Nothing to configure: it follows from `pk` and the column order — the columns
+mode works out `freezeRows: 1` and however many leading pks there are, and
+hands them to the rows mode as the defaults. It costs one `<pane>` element at
+the top of the worksheet, before the first row.
 
 ### `new XlsxStream(...)` in a pipe chain
 
-A `TransformStream<Row, Uint8Array>`: one record per chunk in, the file's
-bytes out.
+A `TransformStream`: one row per chunk in, the file's bytes out. What a chunk
+is follows from the options — a record with `columns`, an array without —
+and the type says so, so a pipe chain that feeds it the wrong one does not
+compile.
 
 ```js
 import { XlsxStream } from 'xlsx-now';
@@ -191,7 +258,7 @@ await (await openAsBlob('widgets.ndjson')).stream()
 [`examples/node/write-file.ts`](examples/node/write-file.ts) is exactly this,
 runnable, splitter and parser included.
 
-### Records that are not a stream: `createXlsxStream(...)`
+### Rows that are not a stream: `createXlsxStream(...)`
 
 An array, a generator, a database cursor. `rows` accepts anything iterable,
 sync or async, and the result is the finished file as a
@@ -210,7 +277,7 @@ const xlsxStream = createXlsxStream({
 });
 ```
 
-This one pulls: a record is read only when the consumer asks for more bytes,
+This one pulls: a row is read only when the consumer asks for more bytes,
 so memory stays flat even for a data set still being received. In Node,
 `writeXlsxFile(path, options)` from `xlsx-now/node` takes the same options and
 writes the file in one call.

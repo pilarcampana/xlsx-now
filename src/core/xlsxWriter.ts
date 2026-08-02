@@ -1,7 +1,8 @@
+import { columnsMode } from './columns.js';
 import { contentTypesXml, rootRelsXml, workbookRelsXml, workbookXml } from './parts.js';
-import { dataRowXml, FIRST_DATA_ROW, headerRowXml, sheetHeaderXml, SHEET_FOOTER } from './sheet.js';
+import { cellRowXml, sheetHeaderXml, SHEET_FOOTER } from './sheet.js';
 import { stylesXml } from './styles.js';
-import type { Column, Row } from './types.js';
+import type { CellRow, Column, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
 
 const WORKSHEET_PART = 'xl/worksheets/sheet1.xml';
@@ -21,36 +22,62 @@ const PUSH_BATCH_CHARS = 64 * 1024;
 const encoder = new TextEncoder();
 
 export interface XlsxWriterOptions {
-    columns: readonly Column[];
+    /**
+     * Turns on the columns mode: the sheet gets a header row of column names,
+     * every row is an incoming record read by key, and the freezes below
+     * default to the header row and the leading pk columns. Left out, rows are
+     * arrays of cells and there is nothing to declare.
+     */
+    columns?: readonly Column[];
     sheetName?: string;
     /**
      * Deflate effort, 0-9. Defaults to 6; `0` writes the parts uncompressed,
      * which is faster but leaves the file roughly ten times bigger.
      */
     compressionLevel?: CompressionLevel;
+    /** Rows fixed at the top of the sheet. Defaults to 0, or to 1 with `columns`. */
+    freezeRows?: number;
+    /**
+     * Columns fixed at the left of the sheet. Defaults to 0, or with
+     * `columns` to however many leading ones are pks.
+     */
+    freezeColumns?: number;
 }
 
+/** Which kind of row a given set of options takes. */
+export type RowOf<O extends XlsxWriterOptions> = O extends { columns: readonly Column[] }
+    ? Row
+    : CellRow;
+
 /**
- * Writes a styled `.xlsx`, one record at a time, handing every byte to `sink`
- * as soon as it exists. No I/O and no streams: this is the shared engine the
+ * Writes a styled `.xlsx`, one row at a time, handing every byte to `sink` as
+ * soon as it exists. No I/O and no streams: this is the shared engine the
  * environment-specific stream classes drive, and the only thing it ever holds
  * is the batch of worksheet XML on its way to the zip.
  */
-export class XlsxWriter {
+export class XlsxWriter<O extends XlsxWriterOptions = XlsxWriterOptions> {
     private readonly zip: ZipWriter;
-    private readonly columns: readonly Column[];
+    private readonly toCellRow: (row: RowOf<O>) => CellRow;
     private batch: string;
-    private rowNumber = FIRST_DATA_ROW;
+    private rowNumber = 1;
 
-    constructor(
-        sink: (bytes: Uint8Array) => void,
-        {
+    constructor(sink: (bytes: Uint8Array) => void, options: O) {
+        const {
             columns,
             sheetName = 'Sheet1',
             compressionLevel = DEFAULT_COMPRESSION_LEVEL,
-        }: XlsxWriterOptions,
-    ) {
-        this.columns = columns;
+        } = options;
+        const mode = columns ? columnsMode(columns) : undefined;
+        // Which of the two modes is running is the whole of the difference
+        // from here on. `RowOf<O>` is what the caller is held to, and no
+        // runtime check on the options narrows it — hence the two casts.
+        this.toCellRow = mode
+            ? (row) => mode.toCellRow(row as Row)
+            : (row) => row as CellRow;
+        const freeze = {
+            rows: options.freezeRows ?? mode?.freeze.rows ?? 0,
+            columns: options.freezeColumns ?? mode?.freeze.columns ?? 0,
+        };
         this.zip = new ZipWriter(sink, compressionLevel);
         this.discardOnFailure(() => {
             this.zip.writeEntry('[Content_Types].xml', contentTypesXml());
@@ -62,7 +89,10 @@ export class XlsxWriter {
             // the one part whose length nobody knows yet.
             this.zip.startEntry(WORKSHEET_PART);
         });
-        this.batch = sheetHeaderXml(columns) + headerRowXml(columns);
+        this.batch = sheetHeaderXml(freeze);
+        // Enough columns and the header row alone fills a batch, so writing it
+        // can reach the zip and fail there like any other row does.
+        if (mode) this.discardOnFailure(() => this.writeCellRow(mode.headerRow));
     }
 
     /**
@@ -85,12 +115,14 @@ export class XlsxWriter {
         this.batch = '';
     }
 
-    writeRow(record: Row): void {
-        this.discardOnFailure(() => {
-            this.batch += dataRowXml(this.rowNumber, record, this.columns);
-            this.rowNumber++;
-            if (this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
-        });
+    private writeCellRow(row: CellRow): void {
+        this.batch += cellRowXml(this.rowNumber, row);
+        this.rowNumber++;
+        if (this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
+    }
+
+    writeRow(row: RowOf<O>): void {
+        this.discardOnFailure(() => this.writeCellRow(this.toCellRow(row)));
     }
 
     /** Closes the worksheet and the archive. No row goes in after this. */
