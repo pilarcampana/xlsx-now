@@ -1,6 +1,6 @@
 {
   "name": "xlsx-now",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with styles (bold headers, PK columns)",
   "type": "module",
   "license": "MIT",
