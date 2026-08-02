@@ -4,7 +4,7 @@
   "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with styles (bold headers, PK columns)",
   "type": "module",
   "license": "MIT",
-  "repository": "ari-dc-uba-ar/xlsx-now",
+  "repository": "pilarcampana/xlsx-now",
   "exports": {
     ".": {
       "types": "./dist/src/core/index.d.ts",
