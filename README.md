@@ -734,10 +734,11 @@ reach (`finish()` always appends the worksheet footer before pushing).
 
 The ESM output above is the primary artifact, but it can't be consumed from a
 classic `<script>` tag (no module resolution) or from a `require()` call. For
-those, `npm run build` also emits a UMD bundle:
+those, `npm run build` also emits UMD bundles:
 
 ```
-dist/umd/xlsx-now.umd.js   # global `xlsxNow`, also AMD- and CommonJS-aware
+dist/umd/xlsx-now.umd.js           # global `xlsxNow`, also AMD- and CommonJS-aware
+dist/umd/xlsx-now-browser.umd.js   # global `xlsxNowBrowser`: the browser helpers
 ```
 
 It is produced by Rollup (`rollup.config.mjs`) from the JS `tsc` already
@@ -752,6 +753,15 @@ The UMD build is a straight repackaging of `src/core/index.ts` — same exports,
 same signatures, no separate entry point and no API differences from the ESM
 path.
 
+There are **two** bundles because they cover different environments, and the
+split mirrors the one `src/` already makes. The first one is the writer, which
+runs anywhere. The second is `src/browser/index.ts` — `downloadXlsx` and
+`createXlsxBlob`, which reach for the DOM and the File System Access API — and
+since a UMD build is above all for the browser, leaving them out would leave
+out the part a page most wants. The core counts as external there too, on the
+same principle: the browser bundle is 3 kB of helpers, not a second copy of the
+writer for the page to download twice.
+
 ```html
 <script src="https://unpkg.com/fflate"></script>
 <script src="node_modules/xlsx-now/dist/umd/xlsx-now.umd.js"></script>
@@ -764,13 +774,31 @@ path.
 </script>
 ```
 
-```js
-const { createXlsxStream } = require('xlsx-now/umd'); // CommonJS
+Loading the helpers on top of that — after the core bundle, whose global they
+read — replaces the whole `Response`/`Blob`/anchor dance with one call:
+
+```html
+<script src="node_modules/xlsx-now/dist/umd/xlsx-now-browser.umd.js"></script>
+<script>
+  // From a click handler: it may open the browser's save dialog.
+  xlsxNowBrowser.downloadXlsx('widgets.xlsx', {
+      columns: [{ name: 'id', pk: true }, { name: 'name' }],
+      rows: [{ id: 1, name: 'Widget 1' }],
+      sheetName: 'Widgets',
+  });
+</script>
 ```
 
-The `xlsx-now/umd` subpath is typed (it reuses `dist/src/core/index.d.ts`,
-since the exports are the same) and the
-package's `unpkg`/`jsdelivr` fields point at the bundle, so a CDN URL like
+```js
+const { createXlsxStream } = require('xlsx-now/umd');     // CommonJS
+const { downloadXlsx } = require('xlsx-now/umd/browser'); // browser only
+```
+
+Both subpaths are typed by reusing the declarations of the sources they
+repackage (`xlsx-now/umd` reuses `dist/src/core/index.d.ts`,
+`xlsx-now/umd/browser` reuses `dist/src/browser/index.d.ts`), since the
+exports are the same. The package's `unpkg`/`jsdelivr` fields point at the core
+bundle, so a CDN URL like
 `https://unpkg.com/xlsx-now` serves it directly. Since the package is
 `"type": "module"`, `dist/umd/package.json` marks just that directory as
 `"type": "commonjs"` — that's what lets the `.js` bundle keep an extension
@@ -779,7 +807,10 @@ browsers serve happily while `require()` still parses it as CommonJS.
 Verified on all three consumption paths (global via script tag, AMD `define`,
 and `require()`), and the resulting files pass the same
 [validation](#try-it) as the ESM output — bold headers, filled PK column,
-frozen header row and PK column, 200 data rows.
+frozen header row and PK column, 200 data rows. The browser bundle is verified
+along with them: the UMD example page generates its file through
+`xlsxNowBrowser`, so the run below exercises both bundles and the handover
+between them.
 
 ```sh
 npm run example:umd:node          # require() the bundle -> out/example-umd-node.xlsx

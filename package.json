@@ -22,7 +22,12 @@
       "types": "./dist/src/core/index.d.ts",
       "default": "./dist/umd/xlsx-now.umd.js"
     },
+    "./umd/browser": {
+      "types": "./dist/src/browser/index.d.ts",
+      "default": "./dist/umd/xlsx-now-browser.umd.js"
+    },
     "./dist/umd/xlsx-now.umd.js": "./dist/umd/xlsx-now.umd.js",
+    "./dist/umd/xlsx-now-browser.umd.js": "./dist/umd/xlsx-now-browser.umd.js",
     "./package.json": "./package.json"
   },
   "types": "./dist/src/core/index.d.ts",
