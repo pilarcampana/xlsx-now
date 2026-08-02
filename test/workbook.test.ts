@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
 import { createXlsxStream } from '../src/core/createXlsxStream.js';
-import { DATETIME_FORMAT } from '../src/core/styles.js';
+import { DEFAULT_DATETIME_FORMAT } from '../src/core/styles.js';
 import type { Column, Row } from '../src/core/types.js';
 import { collect } from './helpers/streams.js';
 import { MAX_VERSION, METHOD_DEFLATE, SHEET_PART, ZIP64_VERSION, readZipEntries } from './helpers/zip.js';
@@ -104,7 +104,15 @@ describe('a generated workbook, read back with exceljs', () => {
     });
 
     it('shows the time too, since the value carries one', () => {
-        assert.equal(sheet.getRow(2).getCell(4).numFmt, DATETIME_FORMAT);
+        // What the file carries is an id — the built-in short date and time —
+        // and not a format code: the spelling of a date is the reader's own,
+        // and `exceljs` answers with its own table's entry for that id.
+        const numFmt = sheet.getRow(2).getCell(4).numFmt;
+        assert.match(
+            numFmt,
+            /y.*h/i,
+            `built-in ${DEFAULT_DATETIME_FORMAT} was read back as "${numFmt}"`,
+        );
     });
 
     it('reads a negative number and a false back too', () => {

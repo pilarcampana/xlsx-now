@@ -87,6 +87,35 @@ function inferredType(value: CellValue): CellType {
     return 'inlineStr';
 }
 
+/**
+ * The type attribute, left out when there is nothing to say: `n` is what a
+ * `<c>` holds without a `t`, so writing it is six bytes per cell to repeat
+ * the default — and numbers are most of what a sheet is made of.
+ */
+function typeAttribute(type: CellType): string {
+    return type === 'n' ? '' : ` t="${type}"`;
+}
+
+/**
+ * Whether the `<t>` has to ask for its whitespace to be kept.
+ *
+ * XML does not touch whitespace inside an element — `xml:space` is what the
+ * *application* reading it is told, and what Excel is told there decides
+ * whether `' 007 '` comes back with its spaces. Only the edges are ever
+ * trimmed, so a string with none pays nothing for the attribute.
+ */
+function keepsSpaces(text: string): boolean {
+    return /^\s|\s$/.test(text);
+}
+
+/** The `<is>` of an inline string: the value itself, in the cell, escaped. */
+function inlineStringXml(value: CellValue): string {
+    // Escaping never touches the edges — none of the five entities is a
+    // space — so the sanitized text answers for the original.
+    const text = sanitizeText(value);
+    return `<is><t${keepsSpaces(text) ? ' xml:space="preserve"' : ''}>${text}</t></is>`;
+}
+
 /** What goes inside the `<v>`, for every type that has one. */
 function valueText(value: CellValue): string {
     if (value instanceof Date) return String(excelSerial(value));
@@ -125,17 +154,26 @@ export function cellXml(
         // The value next to a formula is its cached result, not the cell's
         // own contents: without one the cell stays blank until a reader
         // recalculates it, which is the caller's call to make.
-        const t = type ? ` t="${type}"` : '';
-        return `<c r="${ref}"${t}${s}><f>${formulaText(formula)}</f>${empty ? '' : `<v>${valueText(value)}</v>`}</c>`;
+        //
+        // A cached result lives in the `<v>`, whatever it holds, so text there
+        // is `str` — the "formula string" of the spec — and never `inlineStr`,
+        // which has no `<is>` to go to next to an `<f>`.
+        if (empty) return `<c r="${ref}"${s}><f>${formulaText(formula)}</f></c>`;
+        const cached = type ?? inferredType(value);
+        const t = typeAttribute(cached === 'inlineStr' ? 'str' : cached);
+        return `<c r="${ref}"${t}${s}><f>${formulaText(formula)}</f><v>${valueText(value)}</v></c>`;
     }
 
     // A type with nothing to type is still an empty cell.
     if (empty) return styleIndex ? `<c r="${ref}"${s}/>` : '';
 
     const t = type ?? inferredType(value);
-    if (t === 'inlineStr') {
-        // Inline strings (not shared strings): keeps the writer stateless/streamable.
-        return `<c r="${ref}" t="inlineStr"${s}><is><t xml:space="preserve">${sanitizeText(value)}</t></is></c>`;
+    // Inline strings (not shared strings): keeps the writer stateless and
+    // streamable. `str` asks for the same thing here — with no formula in the
+    // cell there is no formula result to be the string of — so it is written
+    // as the inline string it means.
+    if (t === 'inlineStr' || t === 'str') {
+        return `<c r="${ref}" t="inlineStr"${s}>${inlineStringXml(value)}</c>`;
     }
-    return `<c r="${ref}" t="${t}"${s}><v>${valueText(value)}</v></c>`;
+    return `<c r="${ref}"${typeAttribute(t)}${s}><v>${valueText(value)}</v></c>`;
 }

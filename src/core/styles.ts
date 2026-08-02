@@ -117,14 +117,111 @@ export interface StyleSpec {
 export type StyleRef = string | StyleSpec;
 
 /**
- * What a `Date` is shown as when its cell asks for no format of its own —
- * ISO order, which is the one spelling that reads the same everywhere.
+ * What a `Date` is shown as when its cell asks for no format of its own:
+ * Excel's built-in short date, and the built-in date and time next to it.
+ *
+ * A sheet has no rendered dates in it — there is no preview to write. What a
+ * date cell holds is the serial number and the id of a format, and the
+ * spelling of the day is worked out by whoever opens the file. Ids 14 and 22
+ * are the two the spec hands to the reader's own locale: ECMA-376 lists them
+ * as `mm-dd-yy` and `m/d/yy h:mm`, and Microsoft's implementation notes for
+ * that same clause say Excel shows them in the short date of the system it is
+ * running on. So a date written under 14 reads `15/01/2024` in Buenos Aires
+ * and `1/15/2024` in Chicago — it is what "Short Date" in Excel's own format
+ * menu produces, and the reason it is the default here.
+ *
+ * `dateFormat` is how a workbook says otherwise, with a format code of its
+ * own: `'yyyy-mm-dd'` is the ISO order, which reads the same everywhere and
+ * is nobody's local custom.
  */
-export const DATE_FORMAT = 'yyyy-mm-dd';
-export const DATETIME_FORMAT = 'yyyy-mm-dd hh:mm:ss';
+export const DEFAULT_DATE_FORMAT = 14;
+export const DEFAULT_DATETIME_FORMAT = 22;
+
+/**
+ * The time of day, added to a date format that carries none — the one part of
+ * a timestamp every locale writes the same way, which is why `dateFormat` is
+ * a date and this is not asked for.
+ */
+const TIME_OF_DAY = 'hh:mm:ss';
+
+/**
+ * How wide a built-in date is taken to be by `autoWidthMax`, in characters.
+ * The locale decides the real one, so what is measured is the widest a short
+ * date runs to — `dd/mm/yyyy`, and the same with the time after it.
+ */
+const BUILTIN_DATE_WIDTH = 10;
+const BUILTIN_DATETIME_WIDTH = BUILTIN_DATE_WIDTH + 1 + TIME_OF_DAY.length;
 
 /** Excel's built-in formats take the ids below this one; ours start here. */
 const FIRST_CUSTOM_NUMFMT = 164;
+
+/** What a workbook says about the format its dates fall back to. */
+export interface DateFormatOptions {
+    /**
+     * The format a `Date` with no time of day is shown in: a format code
+     * (`'yyyy-mm-dd'`, `'dd/mm/yy'`) or the id of one of Excel's built-in
+     * formats. Defaults to `14`, the built-in short date, which every reader
+     * shows the way the machine it is running on writes a date.
+     */
+    dateFormat?: string | number;
+    /**
+     * The same, for a `Date` that carries a time of day. Defaults to
+     * `dateFormat` with `hh:mm:ss` after it — and to the built-in `22` when
+     * `dateFormat` is the built-in short date, since an id has no format code
+     * to add anything to.
+     */
+    dateTimeFormat?: string | number;
+}
+
+/**
+ * The two formats a `Date` falls back to, worked out once for the workbook.
+ *
+ * There is one of these behind every date in the file — the format a cell
+ * gets when its style says nothing, and the width that date is measured as
+ * when the sheet is sizing its columns.
+ */
+export class DateFormats {
+    readonly date: string | number;
+    readonly dateTime: string | number;
+
+    constructor({ dateFormat, dateTimeFormat }: DateFormatOptions = {}) {
+        this.date = dateFormat ?? DEFAULT_DATE_FORMAT;
+        this.dateTime = dateTimeFormat ?? this.impliedDateTime();
+    }
+
+    /** What a timestamp is shown as when only the date format was given. */
+    private impliedDateTime(): string | number {
+        if (typeof this.date === 'string') return `${this.date} ${TIME_OF_DAY}`;
+        // A built-in is an id, and an id has no format code to add a time to.
+        // Excel's own pair for the short date is 14 and 22; anything else has
+        // to be said outright rather than guessed at.
+        if (this.date === DEFAULT_DATE_FORMAT) return DEFAULT_DATETIME_FORMAT;
+        throw new Error(
+            `A dateFormat of ${this.date} is one of Excel's built-in formats, and a built-in ` +
+                'has no format code to add a time of day to: say dateTimeFormat as well, or ' +
+                'write dateFormat out as a format code.',
+        );
+    }
+
+    /** The format this value falls back to: the date, or the date and time. */
+    for(value: Date): string | number {
+        return hasTimeOfDay(value) ? this.dateTime : this.date;
+    }
+
+    /**
+     * How many characters this value shows. A format code is measured as it
+     * is written, which is what the date under it comes to; a built-in is the
+     * reader's own, so it is measured as the widest one.
+     */
+    textLength(value: Date): number {
+        const format = this.for(value);
+        if (typeof format === 'string') return format.length;
+        return hasTimeOfDay(value) ? BUILTIN_DATETIME_WIDTH : BUILTIN_DATE_WIDTH;
+    }
+}
+
+/** The formats of a workbook that said nothing about them. */
+export const DEFAULT_DATE_FORMATS = new DateFormats();
 
 /** What a sheet looks like with no style at all — `<cellXfs>` entry 0. */
 const DEFAULT_FONT =
@@ -308,6 +405,8 @@ function section(name: string, entries: readonly string[]): string {
 export class StyleTable {
     /** The styles the writer options declared, by name. */
     private readonly declared: Readonly<Record<string, StyleSpec>>;
+    /** What a `Date` with no format of its own is shown as. */
+    private readonly dates: DateFormats;
 
     private readonly numFmts = new Table([]);
     private readonly fonts = new Table([DEFAULT_FONT]);
@@ -323,8 +422,12 @@ export class StyleTable {
     /** `<index>|<format>` -> the same style with a date format added to it. */
     private readonly dated = new Map<string, number>();
 
-    constructor(declared: Readonly<Record<string, StyleSpec>> = {}) {
+    constructor(
+        declared: Readonly<Record<string, StyleSpec>> = {},
+        dates: DateFormats = DEFAULT_DATE_FORMATS,
+    ) {
         this.declared = declared;
+        this.dates = dates;
     }
 
     private numFmtId(numFmt: string | number | undefined): number {
@@ -434,7 +537,7 @@ export class StyleTable {
      */
     forValue(value: unknown, ref: StyleRef | undefined): number {
         if (!(value instanceof Date)) return this.index(ref);
-        const format = hasTimeOfDay(value) ? DATETIME_FORMAT : DATE_FORMAT;
+        const format = this.dates.for(value);
         const base = this.index(ref);
         const key = `${base}|${format}`;
         const known = this.dated.get(key);

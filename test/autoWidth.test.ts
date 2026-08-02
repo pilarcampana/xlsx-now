@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { WidthMeter, cellTextLength } from '../src/core/autoWidth.js';
-import { DATETIME_FORMAT, DATE_FORMAT } from '../src/core/styles.js';
+import { DateFormats } from '../src/core/styles.js';
 import type { CellValue } from '../src/core/types.js';
 
 /** One column, measured through everything that was written in it. */
@@ -20,9 +20,20 @@ describe('cellTextLength', () => {
         assert.equal(cellTextLength(-1234), 5);
     });
 
-    it('measures a date by the format it will be shown in', () => {
-        assert.equal(cellTextLength(new Date(2024, 0, 15)), DATE_FORMAT.length);
-        assert.equal(cellTextLength(new Date(2024, 0, 15, 12, 30)), DATETIME_FORMAT.length);
+    it('measures a built-in date as the widest one a locale writes', () => {
+        // The reader spells the short date, not the file, so what is measured
+        // is the longest it comes to anywhere.
+        assert.equal(cellTextLength(new Date(2024, 0, 15)), 'dd/mm/yyyy'.length);
+        assert.equal(cellTextLength(new Date(2024, 0, 15, 12, 30)), 'dd/mm/yyyy hh:mm:ss'.length);
+    });
+
+    it('measures a date the workbook spelled out by its own format code', () => {
+        const dates = new DateFormats({ dateFormat: 'dd/mm/yy' });
+        assert.equal(cellTextLength(new Date(2024, 0, 15), dates), 'dd/mm/yy'.length);
+        assert.equal(
+            cellTextLength(new Date(2024, 0, 15, 12, 30), dates),
+            'dd/mm/yy hh:mm:ss'.length,
+        );
     });
 
     it('measures a boolean as Excel spells it', () => {
@@ -73,6 +84,12 @@ describe('WidthMeter', () => {
 
     it('says it measures when it was given one', () => {
         assert.equal(new WidthMeter(10).measures, true);
+    });
+
+    it('measures a date by the formats the workbook it belongs to uses', () => {
+        const meter = new WidthMeter(50, new DateFormats({ dateFormat: 'dddd d "de" mmmm' }));
+        meter.see(0, new Date(2024, 0, 15));
+        assert.equal(meter.columnWidths()[0], 'dddd d "de" mmmm'.length);
     });
 
     it('refuses a maximum no column can be sized by', () => {

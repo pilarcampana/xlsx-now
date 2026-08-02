@@ -15,8 +15,9 @@ describe('the public surface', () => {
         assert.equal(typeof core.StyleTable, 'function');
         assert.equal(typeof core.argb, 'function');
         assert.equal(typeof core.ZipWriter, 'function');
-        assert.equal(core.DATE_FORMAT, 'yyyy-mm-dd');
-        assert.equal(core.DATETIME_FORMAT, 'yyyy-mm-dd hh:mm:ss');
+        assert.equal(typeof core.DateFormats, 'function');
+        assert.equal(core.DEFAULT_DATE_FORMAT, 14);
+        assert.equal(core.DEFAULT_DATETIME_FORMAT, 22);
         assert.equal(core.DEFAULT_COMPRESSION_LEVEL, 6);
     });
 
@@ -31,9 +32,10 @@ describe('the public surface', () => {
 
     it('exports nothing else', () => {
         assert.deepEqual(Object.keys(core).sort(), [
-            'DATETIME_FORMAT',
-            'DATE_FORMAT',
             'DEFAULT_COMPRESSION_LEVEL',
+            'DEFAULT_DATETIME_FORMAT',
+            'DEFAULT_DATE_FORMAT',
+            'DateFormats',
             'LINE',
             'StyleTable',
             'WORKSHEET',

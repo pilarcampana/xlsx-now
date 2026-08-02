@@ -273,6 +273,31 @@ recalculates it, which is a decision worth making on purpose.
 always; saying it outright is how a code that looks like a number stays text,
 or a number that arrived as text goes in as a number.
 
+`'n'` is what a `<c>` holds when it says nothing, so it is never written out —
+six bytes per cell, on the type most of a sheet is made of. The two spellings
+of text are the cell's own business rather than the caller's, and this is what
+they mean in the file:
+
+| type | where the text goes | when |
+| --- | --- | --- |
+| `inlineStr` | `<is><t>` inside the cell | text the cell holds itself |
+| `str` | the `<v>`, next to the `<f>` | the cached result of a formula |
+
+[ECMA-376][ecma376] §18.18.11 spells `str` out as *"cell containing a formula
+string"*: it is not a cheaper `inlineStr`, it is the other one of the pair. A
+cell with an `f` writes its text as `str` — there is no `<is>` next to an
+`<f>` — and a cell without one writes it as `inlineStr`, whichever of the two
+was asked for. Text with nothing around it would be the shared string table,
+`t="s"`, and this writer has none.
+
+`xml:space="preserve"` goes on the `<t>` of a string whose edges would
+otherwise be trimmed, and on no other — the whitespace *inside* an element is
+never XML's to touch, so a string that starts and ends with a letter pays
+nothing for the attribute.
+
+[ecma376]: https://ecma-international.org/publications-and-standards/standards/ecma-376/
+[msoi]: https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oi29500/17d11129-219b-4e2c-88db-45844d21e528
+
 **`col`, and why there is no sparse form.** Columns are numbered from 1, as
 the sheet shows them, and letters work in any case. Whatever follows carries
 on from there, so a line that touches two far-apart columns costs two cells,
@@ -351,9 +376,53 @@ thing, however each of them spelled it, get the same index.
 
 A date is a number in a sheet, and a number with no format is shown as the
 five-digit serial it is. So a `Date` whose cell asks for no format of its own
-gets one: `yyyy-mm-dd`, or `yyyy-mm-dd hh:mm:ss` when the value carries a time
-of day. A style that says `numFmt` is left alone — asking for a format is how
-a caller says it wants that one.
+gets one. A style that says `numFmt` is left alone — asking for a format is
+how a caller says it wants that one.
+
+**There is no preview to write.** A date cell holds two things: the serial
+number, and the id of a format. Nothing in the file says what the day *looks
+like* — that is worked out by whoever opens it, every time. (A formula caches
+its result and a date does not: there is nowhere in a `<c>` to put one.)
+
+**The default is the reader's own short date.** `numFmtId` 14 and 22 are the
+two built-ins the reader spells for itself: [ECMA-376][ecma376] §18.8.30 lists
+them as `mm-dd-yy` and `m/d/yy h:mm`, and Microsoft's implementation notes for
+that same clause ([MS-OI29500][msoi]) say Excel shows them in the short date
+of the system it is running on. They are what "Short Date" in Excel's own
+format menu applies. So a date written by this writer reads `15/01/2024` in
+Buenos Aires and `1/15/2024` in Chicago — each user sees a date written the
+way they write dates, which is the point.
+
+**Or one format for everybody**, when the file is going somewhere that does
+not have a locale — a spec, an import, an archive:
+
+```js
+createXlsxStream({ dateFormat: 'yyyy-mm-dd', rows });   // ISO, everywhere
+createXlsxStream({ dateFormat: 'dd/mm/yyyy', rows });   // one country's own
+```
+
+| option | what it is | default |
+| --- | --- | --- |
+| `dateFormat` | a `Date` with no time of day | `14`, the built-in short date |
+| `dateTimeFormat` | a `Date` that carries one | `dateFormat` + ` hh:mm:ss` |
+
+The time of day is added to `dateFormat` on its own, so only the date is ever
+asked for: an hour is written the same way everywhere and the order of a day
+and a month is not. A built-in is an id and not a format code — there is
+nothing to add a time to — so `dateFormat: 14` pairs with the built-in `22`,
+and any other built-in has to say its `dateTimeFormat` outright rather than
+have one guessed at.
+
+That pair is where the two ways part: `22` is the reader's short date with
+the time to the *minute*, since that is the built-in Excel has, while a
+`dateFormat` written out gets the whole `hh:mm:ss`. The seconds are in the
+value either way — this is what is shown, not what is stored — and a workbook
+that wants them shown under a local date says so:
+`{ dateFormat: 14, dateTimeFormat: 'dd/mm/yyyy hh:mm:ss' }`.
+
+`autoWidthMax` measures a date by the format it will be shown in. Under a
+built-in that is the reader's business, so what it measures is the widest a
+short date runs to.
 
 The serial is the **wall clock the caller reads**, not the UTC instant. A
 sheet has no time zone: `new Date(2024, 0, 15)` in Buenos Aires has to come
@@ -425,7 +494,8 @@ and Excel's default width when it says nothing either.
 
 **What is measured.** What the cell will show: the characters of a string, the
 digits of a number, `TRUE`/`FALSE`, and — for a date — the format it gets,
-`yyyy-mm-dd` or `yyyy-mm-dd hh:mm:ss`. A formula is measured by the cached
+which under the [default built-in](#dates) is the widest a short date runs to
+(`dd/mm/yyyy`, and the same with the time after it). A formula is measured by the cached
 result it carries, and not at all when it carries none: there is nothing in
 the file to be wide for until a reader recalculates it. The one thing this
 cannot see is a *number format*: `1234.5` is measured as the six characters it

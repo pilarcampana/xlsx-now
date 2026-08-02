@@ -77,9 +77,9 @@ describe('XlsxWriter: the rows mode', () => {
         const rows: CellRow[] = [['a', 1], [true, new Date(0)]];
         const { sheet } = await readXlsx(write({}, rows));
         assert.deepEqual(sheetRows(sheet), [
-            '<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">a</t></is></c>' +
-                '<c r="B1" t="n"><v>1</v></c></row>',
-            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" t="n" s="1"><v>25569</v></c></row>',
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c>' +
+                '<c r="B1"><v>1</v></c></row>',
+            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" s="1"><v>25569</v></c></row>',
         ]);
     });
 
@@ -117,7 +117,7 @@ describe('XlsxWriter: the columns mode', () => {
         // then the plain header, then the pk fill on its own.
         assert.ok(header?.includes('<c r="A1" t="inlineStr" s="1">'), header ?? 'no header row');
         assert.ok(header?.includes('<c r="B1" t="inlineStr" s="2">'), header ?? 'no header row');
-        assert.ok(data?.includes('<c r="A2" t="n" s="3">'), data ?? 'no data row');
+        assert.ok(data?.includes('<c r="A2" s="3">'), data ?? 'no data row');
         assert.ok(data?.includes('<c r="B2" t="inlineStr">'), 'a plain cell got a style');
     });
 
@@ -484,7 +484,29 @@ describe('XlsxWriter: the styles the workbook carries', () => {
     it('formats a date so it is not read back as a number', async () => {
         const { sheet, byName } = await readXlsx(write({}, [[new Date(2024, 0, 15)]]));
         assert.ok(sheet.includes(' s="1"'), sheet);
-        assert.ok(byName.get('xl/styles.xml')?.text.includes('formatCode="yyyy-mm-dd"'));
+        const styles = byName.get('xl/styles.xml')?.text ?? '';
+        // The built-in short date: an id, so there is no format code in the
+        // file at all — what the day looks like is the reader's own.
+        assert.match(styles, /<cellXfs[^>]*><xf [^>]*\/><xf numFmtId="14"/, styles);
+        assert.ok(!styles.includes('numFmts'), styles);
+    });
+
+    it('refuses a date format nothing can be added to before it writes a byte', () => {
+        const { sink, bytes } = recordingSink();
+        assert.throws(() => new XlsxWriter(sink, { dateFormat: 15 }), /dateTimeFormat/);
+        assert.equal(bytes().length, 0);
+    });
+
+    it('takes the date format the workbook asked for, time of day and all', async () => {
+        const { byName } = await readXlsx(
+            write({ dateFormat: 'dd/mm/yyyy' }, [
+                [new Date(2024, 0, 15)],
+                [new Date(2024, 0, 15, 12, 30)],
+            ]),
+        );
+        const styles = byName.get('xl/styles.xml')?.text ?? '';
+        assert.ok(styles.includes('formatCode="dd/mm/yyyy"'), styles);
+        assert.ok(styles.includes('formatCode="dd/mm/yyyy hh:mm:ss"'), styles);
     });
 });
 
@@ -524,7 +546,7 @@ describe('XlsxWriter: the columns of the sheet', () => {
             ]),
         );
         assert.ok(sheet.includes('<col min="3" max="3" style="1"/>'), sheet);
-        assert.ok(sheet.includes('<c r="A1" t="n" s="1">'), sheet);
+        assert.ok(sheet.includes('<c r="A1" s="1">'), sheet);
         assert.equal((byName.get('xl/styles.xml')?.text.match(/formatCode/g) ?? []).length, 1);
     });
 });

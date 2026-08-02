@@ -77,7 +77,7 @@ describe('cellRowXml', () => {
     it('numbers the row and puts each value in its own column', () => {
         assert.equal(
             rowXml(3, [1, true]),
-            '<row r="3"><c r="A3" t="n"><v>1</v></c><c r="B3" t="b"><v>1</v></c></row>',
+            '<row r="3"><c r="A3"><v>1</v></c><c r="B3" t="b"><v>1</v></c></row>',
         );
     });
 
@@ -89,8 +89,8 @@ describe('cellRowXml', () => {
         // The position *is* the column, so a hole has to stay a hole.
         assert.equal(
             rowXml(1, ['a', undefined, 'b']),
-            '<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">a</t></is></c>' +
-                '<c r="C1" t="inlineStr"><is><t xml:space="preserve">b</t></is></c></row>',
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c>' +
+                '<c r="C1" t="inlineStr"><is><t>b</t></is></c></row>',
         );
     });
 
@@ -108,19 +108,19 @@ describe('cellRowXml', () => {
     it('takes a cell as a value plus what it says about itself', () => {
         assert.equal(
             rowXml(2, [{ v: 7, s: { bold: true } }]),
-            '<row r="2"><c r="A2" t="n" s="1"><v>7</v></c></row>',
+            '<row r="2"><c r="A2" s="1"><v>7</v></c></row>',
         );
     });
 
     it('takes a cell with no style as the default style', () => {
-        assert.equal(rowXml(2, [{ v: 7 }]), '<row r="2"><c r="A2" t="n"><v>7</v></c></row>');
+        assert.equal(rowXml(2, [{ v: 7 }]), '<row r="2"><c r="A2"><v>7</v></c></row>');
     });
 
     it('writes the formula and the type a cell carries', () => {
         assert.equal(
             rowXml(1, [{ v: 3, f: '=A1+A2' }, { v: '007', t: 'inlineStr' }]),
             '<row r="1"><c r="A1"><f>A1+A2</f><v>3</v></c>' +
-                '<c r="B1" t="inlineStr"><is><t xml:space="preserve">007</t></is></c></row>',
+                '<c r="B1" t="inlineStr"><is><t>007</t></is></c></row>',
         );
     });
 
@@ -129,7 +129,7 @@ describe('cellRowXml', () => {
         // that gets a style nobody asked for, so it is not shown as a serial.
         assert.equal(
             rowXml(1, [new Date(1970, 0, 1)]),
-            '<row r="1"><c r="A1" t="n" s="1"><v>25569</v></c></row>',
+            '<row r="1"><c r="A1" s="1"><v>25569</v></c></row>',
         );
     });
 
@@ -144,10 +144,10 @@ describe('cellRowXml: the column a cell asks for', () => {
     it('sends the cell to the column it names, by letter or by number', () => {
         assert.equal(
             rowXml(1, [{ v: 'far', col: 'D' }]),
-            '<row r="1"><c r="D1" t="inlineStr"><is><t xml:space="preserve">far</t></is></c></row>',
+            '<row r="1"><c r="D1" t="inlineStr"><is><t>far</t></is></c></row>',
         );
         // Columns are numbered from 1, as the sheet shows them.
-        assert.equal(rowXml(1, [{ v: 1, col: 4 }]), '<row r="1"><c r="D1" t="n"><v>1</v></c></row>');
+        assert.equal(rowXml(1, [{ v: 1, col: 4 }]), '<row r="1"><c r="D1"><v>1</v></c></row>');
     });
 
     it('costs nothing for the columns it skips over', () => {
@@ -195,7 +195,7 @@ describe('cellRowXml: what the row itself asks for', () => {
         assert.equal(
             rowXml(1, [{ v: 'x', s: { italic: true } }], { s: { bold: true } }),
             '<row r="1" s="2" customFormat="1">' +
-                '<c r="A1" t="inlineStr" s="1"><is><t xml:space="preserve">x</t></is></c></row>',
+                '<c r="A1" t="inlineStr" s="1"><is><t>x</t></is></c></row>',
         );
     });
 
