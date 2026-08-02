@@ -1,17 +1,22 @@
-// What goes into the writer, beyond the rows themselves. One stream carries
-// the whole workbook: rows of cells, records read by column, and the commands
-// that open a new worksheet along the way.
-import type { CellRow, Column, Row } from './types.js';
+// What goes into the writer. One stream carries the whole workbook: rows of
+// cells, records read by column, and the commands that open a worksheet or
+// spell a line out.
+import { columnIndex } from './cell.js';
+import type { RowOptions } from './sheet.js';
+import type { Cell, CellRow, Column, Row } from './types.js';
 
 /**
- * The key that makes a message a command instead of a row, and the only
- * command there is: its value is the name of the worksheet to open.
+ * The keys that make a message a command instead of a row: the worksheet to
+ * open, and the line to write.
  *
  * A leading `#` is what marks a command, so a record cannot have keys that
  * start with one — which costs nothing, since a column's `name` (what the
  * header row shows) is free of the restriction and only its `key` is not.
+ * A key that starts with `#` and is not one of these is refused by name,
+ * rather than going in as a row of blanks.
  */
 export const WORKSHEET = '#worksheet';
+export const LINE = '#line';
 
 /**
  * Everything that is decided per worksheet. The writer options carry these
@@ -50,30 +55,124 @@ export interface SheetOptions {
  */
 export type WorksheetCommand = SheetOptions & { [WORKSHEET]: string };
 
-/** One message on the way in: a row of cells, a record, or a command. */
-export type SheetInput = CellRow | Row | WorksheetCommand;
+/**
+ * Cells by column, for a line that only touches a few of them:
+ * `{ A: 'total', F: 12 }`. The keys are column letters, as the sheet shows
+ * them; a value is a cell like any other, bare or `{ value, style }`.
+ */
+export type SparseValues = Record<string, Cell>;
 
 /**
- * A command is an object carrying the `#worksheet` key — which a row array
- * cannot be, and a record must not be.
+ * One line, said outright instead of left to be recognized. The four forms
+ * are what a line can be, and `sparse` is the one that has no bare shape to
+ * be autodetected from:
+ *
+ * ```js
+ * { '#line': 'row', values: { id: 1, name: 'Ana' } }   // read by the columns
+ * { '#line': 'array', values: [1, 'Ana'] }             // position is the column
+ * { '#line': 'sparse', values: { A: 1, F: 'Ana' } }    // cells by column letter
+ * { '#line': 'empty' }                                 // a row and nothing in it
+ * ```
+ *
+ * The point of saying it outright is `RowOptions`: `height`, `hidden` and a
+ * `style` for the whole row have nowhere to go on a bare array or record.
+ *
+ * ```js
+ * { '#line': 'array', values: ['Total'], style: { bold: true }, height: 22 }
+ * ```
  */
+export type LineCommand = RowOptions &
+    (
+        | { [LINE]: 'row'; values: Row }
+        | { [LINE]: 'array'; values: CellRow }
+        | { [LINE]: 'sparse'; values: SparseValues }
+        | { [LINE]: 'empty'; values?: undefined }
+    );
+
+/** One message on the way in: a row of cells, a record, or a command. */
+export type SheetInput = CellRow | Row | WorksheetCommand | LineCommand;
+
 export function isWorksheetCommand(input: SheetInput): input is WorksheetCommand {
     return !Array.isArray(input) && WORKSHEET in input;
 }
 
+export function isLineCommand(input: SheetInput): input is LineCommand {
+    return !Array.isArray(input) && LINE in input;
+}
+
 /**
- * Why a record could not be written: either the sheet has no columns to read
- * it by, or what looked like a record is a command nobody knows — a
- * misspelled `#worksheet` would otherwise go in as a blank row.
+ * A record is what an object message is when it claims no command — but a key
+ * that starts with `#` is a command nobody knows, and a misspelled one
+ * (`#worksheets`, `#lines`) would otherwise go in as a row of blanks. Reading
+ * the keys is what the columns mode does with the record anyway.
  */
-export function recordError(record: Row): Error {
+export function checkRecord(record: Row): void {
     for (const key in record) {
-        if (key.startsWith('#')) {
-            return new Error(`Unknown command "${key}": the only one is "${WORKSHEET}".`);
+        if (key.charCodeAt(0) === 35) {
+            throw new Error(
+                `Unknown command "${key}": the commands are "${WORKSHEET}" and "${LINE}".`,
+            );
         }
     }
+}
+
+/** Why a record could not be written on a sheet that has no columns. */
+export function noColumnsError(): Error {
     return new Error(
         'A record needs columns to be read by: declare them in the writer options, ' +
             `or in a "${WORKSHEET}" command. Rows of cells need no columns.`,
     );
+}
+
+/**
+ * Sparse values as the row of cells they describe. The holes between them are
+ * left as holes — an absent position writes no cell at all — so a line that
+ * touches column A and column BZ costs two cells, not seventy-eight.
+ */
+export function sparseCellRow(values: SparseValues): CellRow {
+    const row: Cell[] = [];
+    for (const key in values) {
+        const index = columnIndex(key);
+        if (index === undefined) {
+            throw new Error(
+                `"${key}" is not a column: a sparse line is keyed by column letters ("A", "B", "AA").`,
+            );
+        }
+        row[index] = values[key];
+    }
+    return row;
+}
+
+/**
+ * The cells a `#line` command spells out. `values` is taken as the kind says,
+ * and a kind the writer does not know is refused by name — with `row` left to
+ * the caller, which is the one form that needs the sheet's columns.
+ */
+export function lineCells(command: LineCommand): CellRow | undefined {
+    switch (command[LINE]) {
+        case 'empty':
+            return [];
+        case 'array':
+            // Nothing to convert: `values` is already the row it will be
+            // written as. Absent, the line is as empty as `empty` says.
+            return command.values ?? [];
+        case 'sparse':
+            return command.values ? sparseCellRow(command.values) : [];
+        case 'row':
+            // The record still has to be read by the sheet's columns, which
+            // this module knows nothing about.
+            return undefined;
+        default:
+            throw new Error(
+                `Unknown line "${String((command as Record<string, unknown>)[LINE])}": ` +
+                    'a line is "row", "array", "sparse" or "empty".',
+            );
+    }
+}
+
+/** The record a `{ '#line': 'row' }` command carries, checked like a bare one. */
+export function lineRecord(command: LineCommand): Row {
+    const values = (command as { values?: Row }).values ?? {};
+    checkRecord(values);
+    return values;
 }

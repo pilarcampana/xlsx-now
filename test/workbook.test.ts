@@ -159,7 +159,10 @@ describe('a workbook of several sheets, read back with exceljs', () => {
                     { label: 'sum', total: 7.5 },
                     { '#worksheet': 'Notas', columns: [], freezeRows: 0 },
                     ['a note', 2],
-                    ['another', 3],
+                    { '#line': 'empty' },
+                    { '#line': 'array', values: ['a tall title'], height: 30, style: { bold: true } },
+                    { '#line': 'sparse', values: { C: 'far right' } },
+                    { '#line': 'array', values: ['out of sight'], hidden: true },
                 ],
             }),
         );
@@ -178,9 +181,27 @@ describe('a workbook of several sheets, read back with exceljs', () => {
         const [people, totals, notas] = workbook.worksheets;
         assert.equal(people?.rowCount, 2); // header + one record
         assert.equal(totals?.rowCount, 2);
-        assert.equal(notas?.rowCount, 2); // no header of its own
+        assert.equal(notas?.rowCount, 5); // no header of its own
         assert.equal(totals?.getRow(2).getCell(2).value, 7.5);
         assert.equal(notas?.getRow(1).getCell(1).value, 'a note');
+    });
+
+    it('reads back what a #line asked of the row itself', () => {
+        const notas = workbook.worksheets[2];
+        assert.ok(notas, 'the third sheet is missing');
+        // Row 2 is the empty line, so the title is row 3.
+        const title = notas.getRow(3);
+        assert.equal(title.getCell(1).value, 'a tall title');
+        assert.equal(title.height, 30);
+        assert.ok(title.font?.bold, 'the row style did not reach the row');
+        assert.equal(notas.getRow(5).hidden, true);
+    });
+
+    it('puts a sparse line at the column its letter names', () => {
+        const notas = workbook.worksheets[2];
+        const sparse = notas?.getRow(4);
+        assert.equal(sparse?.getCell(3).value, 'far right');
+        assert.equal(sparse?.getCell(1).value, null, 'the gap was filled in');
     });
 
     it('heads each sheet with its own columns, and styles them as its own', () => {

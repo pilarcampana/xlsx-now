@@ -258,15 +258,86 @@ describe('XlsxWriter: the #worksheet command', () => {
         assert.deepEqual(sheetNames, ['La primera']);
     });
 
-    it('refuses a name Excel would refuse, before writing a byte of the sheet', () => {
-        assert.throws(() => write({ sheetName: 'a:b' }, [['a']]), /forbids/);
-        assert.throws(() => write({}, [{ '#worksheet': '' }]), /cannot be empty/);
-        assert.throws(() => write({}, [{ '#worksheet': 'a/b' }]), /forbids/);
-        assert.throws(() => write({}, [{ '#worksheet': 'x'.repeat(32) }]), /31 characters/);
-        assert.throws(
-            () => write({ sheetName: 'Uno' }, [['a'], { '#worksheet': 'uno' }]),
-            /already taken/,
+    it('makes a name Excel would refuse fit, rather than refusing it', async () => {
+        // A file Excel will not open is worse than a sheet whose name lost a
+        // slash, and by the time anyone finds out the rows are gone.
+        const { sheetNames } = await readXlsx(
+            write({ sheetName: 'Enero/Febrero' }, [
+                ['a'],
+                { '#worksheet': '' },
+                { '#worksheet': 'x'.repeat(40) },
+                { '#worksheet': 'enero/febrero' },
+            ]),
         );
+        assert.deepEqual(sheetNames, [
+            'EneroFebrero',
+            'Sheet2',
+            'x'.repeat(31),
+            'enerofebrero (2)',
+        ]);
+    });
+});
+
+describe('XlsxWriter: the #line command', () => {
+    it('writes a record read by the columns, said outright', async () => {
+        const { sheet } = await readXlsx(
+            write({ columns: COLUMNS }, [{ '#line': 'row', values: { id: 1, full_name: 'Ana' } }]),
+        );
+        assert.ok(sheetRows(sheet)[1]?.includes('>Ana<'), sheet);
+    });
+
+    it('writes an array said outright, the same as a bare one', async () => {
+        const spelled = await readXlsx(write({}, [{ '#line': 'array', values: ['a', 1] }]));
+        const bare = await readXlsx(write({}, [['a', 1]]));
+        assert.deepEqual(sheetRows(spelled.sheet), sheetRows(bare.sheet));
+    });
+
+    it('writes an empty line, the same as an empty array does', async () => {
+        const { sheet } = await readXlsx(write({}, [['a'], { '#line': 'empty' }, ['b']]));
+        const rows = sheetRows(sheet);
+        assert.equal(rows.length, 3);
+        assert.equal(rows[1], '<row r="2"></row>');
+    });
+
+    it('writes a sparse line by column letter, and nothing in between', async () => {
+        const { sheet } = await readXlsx(
+            write({}, [{ '#line': 'sparse', values: { A: 'first', D: 4 } }]),
+        );
+        const [row = ''] = sheetRows(sheet);
+        assert.ok(row.includes('r="A1"'), row);
+        assert.ok(row.includes('r="D1"'), row);
+        assert.ok(!row.includes('r="B1"'), 'a gap was written as a cell');
+    });
+
+    it('gives the row the height, the style and the hiding it asks for', async () => {
+        const { sheet } = await readXlsx(
+            write({}, [
+                { '#line': 'array', values: ['Total'], height: 22, style: { bold: true } },
+                { '#line': 'empty', hidden: true },
+            ]),
+        );
+        const [total = '', hidden = ''] = sheetRows(sheet);
+        assert.ok(total.startsWith('<row r="1" s="1" customFormat="1" ht="22" customHeight="1">'), total);
+        assert.ok(hidden.startsWith('<row r="2" hidden="1">'), hidden);
+    });
+
+    it('leaves a bare row unadorned, as it has nowhere to say otherwise', async () => {
+        const { sheet } = await readXlsx(write({}, [['a']]));
+        assert.ok(sheetRows(sheet)[0]?.startsWith('<row r="1">'), sheet);
+    });
+
+    it('says what a line nobody knows was asked to be', () => {
+        assert.throws(() => write({}, [{ '#line': 'colum' } as never]), /Unknown line/);
+    });
+
+    it('needs the sheet\'s columns for a record, like a bare one does', () => {
+        assert.throws(() => write({}, [{ '#line': 'row', values: { id: 1 } }]), /needs columns/);
+    });
+
+    it('opens the first sheet, as any other line does', async () => {
+        const { sheetNames, sheet } = await readXlsx(write({}, [{ '#line': 'empty' }]));
+        assert.deepEqual(sheetNames, ['Sheet1']);
+        assert.equal(sheetRows(sheet).length, 1);
     });
 });
 
@@ -291,6 +362,12 @@ describe('XlsxWriter: rows of cells and records, together', () => {
 
     it('names a command nobody knows rather than writing a blank row', () => {
         assert.throws(() => write({}, [{ '#worksheets': 'Sheet2' }]), /Unknown command/);
+        // Columns or not: a `#` key is a command that was meant, not a
+        // property nobody declared.
+        assert.throws(
+            () => write({ columns: COLUMNS }, [{ '#lines': 'empty' }]),
+            /Unknown command/,
+        );
     });
 });
 

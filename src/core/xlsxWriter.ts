@@ -1,26 +1,28 @@
 import {
+    checkRecord,
+    isLineCommand,
     isWorksheetCommand,
-    recordError,
+    lineCells,
+    lineRecord,
+    noColumnsError,
     WORKSHEET,
+    type LineCommand,
     type SheetInput,
     type SheetOptions,
 } from './command.js';
 import { columnsMode, type ColumnsMode } from './columns.js';
 import {
-    checkSheetName,
     contentTypesXml,
     rootRelsXml,
     workbookRelsXml,
     workbookXml,
     worksheetPart,
+    sheetName,
 } from './parts.js';
-import { cellRowXml, sheetHeaderXml, SHEET_FOOTER } from './sheet.js';
+import { cellRowXml, sheetHeaderXml, SHEET_FOOTER, type RowOptions } from './sheet.js';
 import { stylesXml } from './styles.js';
 import type { CellRow, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
-
-/** What the first sheet is called when nothing else names it. */
-const DEFAULT_SHEET_NAME = 'Sheet1';
 
 /**
  * How much worksheet XML is accumulated before it is handed to the zip.
@@ -40,7 +42,8 @@ export interface XlsxWriterOptions extends SheetOptions {
     /**
      * Name of the first worksheet; defaults to `Sheet1`. Every other sheet is
      * named by the `#worksheet` command that opens it — and so is the first
-     * one, when a command arrives before any row.
+     * one, when a command arrives before any row. Whatever the name, it is
+     * made to fit what Excel accepts; see `sheetName` in `parts.ts`.
      */
     sheetName?: string;
     /**
@@ -107,8 +110,8 @@ export class XlsxWriter {
         this.batch = '';
     }
 
-    private writeCellRow(row: CellRow): void {
-        this.batch += cellRowXml(this.rowNumber, row);
+    private writeCellRow(row: CellRow, options?: RowOptions): void {
+        this.batch += cellRowXml(this.rowNumber, row, options);
         this.rowNumber++;
         if (this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
     }
@@ -119,8 +122,8 @@ export class XlsxWriter {
      * first one; either way, whatever it leaves out falls back to the
      * options, and then to what the columns imply.
      */
-    private openSheet(name: string, sheet: SheetOptions): void {
-        checkSheetName(name, this.sheetNames);
+    private openSheet(asked: unknown, sheet: SheetOptions): void {
+        const name = sheetName(asked, this.sheetNames, this.sheetNames.length + 1);
         const columns = sheet.columns ?? this.defaults.columns;
         // A header row with no column in it is nobody's intention, so an
         // empty list reads as the rows mode — which is how a sheet opts out
@@ -154,7 +157,13 @@ export class XlsxWriter {
 
     /** The first sheet, as the writer options alone describe it. */
     private openFirstSheet(): void {
-        this.openSheet(this.defaults.sheetName ?? DEFAULT_SHEET_NAME, this.defaults);
+        this.openSheet(this.defaults.sheetName, this.defaults);
+    }
+
+    /** One record, read by the sheet's columns — the one line that needs them. */
+    private recordCells(record: Row): CellRow {
+        if (!this.mode) throw noColumnsError();
+        return this.mode.toCellRow(record);
     }
 
     /**
@@ -162,14 +171,26 @@ export class XlsxWriter {
      * will be written as. The two travel together: which one a message is
      * says nothing about what the next one has to be.
      */
-    private toCellRow(input: CellRow | Row): CellRow {
+    private autodetectedCells(input: CellRow | Row): CellRow {
         if (Array.isArray(input)) return input as CellRow;
         const record = input as Row;
-        if (!this.mode) throw recordError(record);
-        return this.mode.toCellRow(record);
+        // What claims no command has to be a record — and a key that starts
+        // with `#` says it meant to claim one.
+        checkRecord(record);
+        return this.recordCells(record);
     }
 
-    /** One message: a row of cells, a record, or a `#worksheet` command. */
+    /**
+     * A line said outright: its cells as the kind describes them, and the
+     * command itself as what the row asks for past them — a `LineCommand`
+     * *is* a `RowOptions`, so there is nothing to pick out of it.
+     */
+    private writeLineCommand(command: LineCommand): void {
+        const cells = lineCells(command) ?? this.recordCells(lineRecord(command));
+        this.writeCellRow(cells, command);
+    }
+
+    /** One message: a row of cells, a record, or a command. */
     writeRow(input: SheetInput): void {
         this.discardOnFailure(() => {
             if (isWorksheetCommand(input)) {
@@ -180,7 +201,8 @@ export class XlsxWriter {
                 return;
             }
             if (!this.open) this.openFirstSheet();
-            this.writeCellRow(this.toCellRow(input));
+            if (isLineCommand(input)) this.writeLineCommand(input);
+            else this.writeCellRow(this.autodetectedCells(input));
         });
     }
 

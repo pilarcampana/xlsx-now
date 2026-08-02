@@ -19,21 +19,26 @@ describe('the public surface', () => {
         assert.equal(core.DEFAULT_COMPRESSION_LEVEL, 6);
     });
 
-    it('exports the command key, and the guard that recognizes one', () => {
+    it('exports the command keys, and the guards that recognize one', () => {
         assert.equal(core.WORKSHEET, '#worksheet');
+        assert.equal(core.LINE, '#line');
         assert.equal(core.isWorksheetCommand({ '#worksheet': 'Sheet2' }), true);
         assert.equal(core.isWorksheetCommand({ name: 'Ana' }), false);
+        assert.equal(core.isLineCommand({ '#line': 'empty' }), true);
+        assert.equal(core.isLineCommand({ name: 'Ana' }), false);
     });
 
     it('exports nothing else', () => {
         assert.deepEqual(Object.keys(core).sort(), [
             'DEFAULT_COMPRESSION_LEVEL',
+            'LINE',
             'STYLE',
             'WORKSHEET',
             'XlsxStream',
             'XlsxWriter',
             'ZipWriter',
             'createXlsxStream',
+            'isLineCommand',
             'isWorksheetCommand',
             'styleIndex',
             'stylesXml',

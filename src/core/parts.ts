@@ -5,7 +5,9 @@ const WORKSHEET_CONTENT_TYPE =
 
 /** Excel's own limits on what a worksheet can be called. */
 const NAME_MAX_LENGTH = 31;
-const FORBIDDEN_IN_NAME = /[\\/?*[\]:]/;
+const FORBIDDEN_IN_NAME = /[\\/?*[\]:]/g;
+/** Excel refuses a name that starts or ends with one of these, too. */
+const FORBIDDEN_AT_THE_ENDS = /^'+|'+$/g;
 
 /** The part a worksheet is written to. `number` is 1-based, as Excel numbers them. */
 export function worksheetPart(number: number): string {
@@ -80,28 +82,33 @@ export function workbookRelsXml(sheetCount: number): string {
 }
 
 /**
- * A name Excel refuses is a file that will not open, and the writer would
- * only find that out long after the rows are gone — so every sheet name is
- * checked as its sheet opens, against the limits Excel itself applies: 1 to
- * 31 characters, none of `\ / ? * [ ] :`, and no two sheets alike (which it
- * compares without regard to case).
+ * The name Excel will accept for what the caller asked to call the sheet.
+ *
+ * A name Excel refuses is a file that will not open, and by the time anyone
+ * finds out the rows are long gone — so rather than refuse the name, it is
+ * made to fit, the way a spreadsheet importing foreign data does: the
+ * characters it forbids (`\ / ? * [ ] :`, and a leading or trailing `'`) are
+ * dropped, anything past 31 characters is cut, an empty name falls back to
+ * `Sheet<number>`, and a name another sheet already took — which Excel
+ * compares without regard to case — gets a `(2)`, a `(3)`, and so on.
+ *
+ * `number` is the sheet's position, 1-based, and only names the ones that
+ * arrive with nothing to be called.
  */
-export function checkSheetName(name: string, taken: readonly string[]): void {
-    if (typeof name !== 'string' || !name) {
-        throw new Error('A worksheet name cannot be empty.');
+export function sheetName(asked: unknown, taken: readonly string[], number: number): string {
+    const cleaned =
+        typeof asked === 'string'
+            ? asked.replace(FORBIDDEN_IN_NAME, '').replace(FORBIDDEN_AT_THE_ENDS, '').trim()
+            : '';
+    const wanted = (cleaned || `Sheet${number}`).slice(0, NAME_MAX_LENGTH);
+
+    // The number has to fit inside the same 31 characters, so what it costs
+    // comes off the name rather than off the end of the result.
+    const used = new Set(taken.map((name) => name.toLowerCase()));
+    let candidate = wanted;
+    for (let n = 2; used.has(candidate.toLowerCase()); n++) {
+        const suffix = ` (${n})`;
+        candidate = wanted.slice(0, NAME_MAX_LENGTH - suffix.length) + suffix;
     }
-    if (name.length > NAME_MAX_LENGTH) {
-        throw new Error(
-            `Worksheet name "${name}" is longer than the ${NAME_MAX_LENGTH} characters Excel allows.`,
-        );
-    }
-    if (FORBIDDEN_IN_NAME.test(name)) {
-        throw new Error(
-            `Worksheet name "${name}" carries one of the characters Excel forbids: \\ / ? * [ ] :`,
-        );
-    }
-    const lowered = name.toLowerCase();
-    if (taken.some((used) => used.toLowerCase() === lowered)) {
-        throw new Error(`Worksheet name "${name}" is already taken: no two sheets can share one.`);
-    }
+    return candidate;
 }

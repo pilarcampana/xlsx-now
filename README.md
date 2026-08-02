@@ -3,7 +3,8 @@
 XLSX fast outputs — a streaming XLSX writer with real cell styles (bold
 headers, highlighted primary-key columns), a frozen header row and as many
 worksheets as the stream cares to open, designed to run **unmodified in Node
-and in the browser**.
+and in the browser**. The stream carries the workbook: rows, and the commands
+that open a sheet or spell a line out.
 
 ## Why not just fork `xlsx-write-stream`?
 
@@ -75,9 +76,11 @@ split in layers:
   the columns it returns the freeze they imply, the header row, and the
   function that reads one record by key into a row of cells. Nothing below it
   knows what a column is.
-- **The commands, alongside the rows.** `command.ts` defines the one message
-  that is not a row — `{ '#worksheet': name }` — and the writer turns it into
-  the end of one worksheet part and the start of the next. See
+- **The commands, alongside the rows.** `command.ts` defines the messages that
+  are not rows: `#worksheet`, which the writer turns into the end of one
+  worksheet part and the start of the next, and `#line`, which is a row said
+  outright — with a height, a style or a column letter, none of which a bare
+  array has room for. See
   [Several worksheets in one stream](#several-worksheets-in-one-stream) for
   how the workbook is put together without ever knowing how many sheets are
   coming.
@@ -151,10 +154,18 @@ A message is one of three things:
 | `[1, 'Widget 1']` | a row of cells, where the position is the column |
 | `{ id: 1, name: 'Widget 1' }` | a record, read by the sheet's `columns` |
 | `{ '#worksheet': 'Summary' }` | a command: everything after it goes to a new sheet |
+| `{ '#line': 'array', values: [...] }` | a command: the line said outright, options and all |
 
 The first two are the same thing with a header on top, and they are not two
 modes to choose between: a sheet with `columns` takes records *and* rows of
-cells, in any order.
+cells, in any order. The last one is those same two lines spelled out, for
+when the line has something to say beyond its cells.
+
+A key that starts with `#` is what makes a message a command. That is the one
+reserved character in the API, and it costs nothing: a column's `name` — what
+the header row shows — can be anything, `#` included, and only its `key` is
+restricted. A key that starts with `#` and is not a command the writer knows
+is refused by name, rather than going in as a row of blanks.
 
 ### The columns mode
 
@@ -244,6 +255,48 @@ mode works out `freezeRows: 1` and however many leading pks there are, and
 hands them to the rows mode as the defaults. It costs one `<pane>` element at
 the top of the worksheet, before the first row.
 
+### Lines said outright: `#line`
+
+A row array and a record are recognized by their shape, which is all most
+lines need. `#line` is the same line said outright, and it buys three things
+that shape alone cannot express:
+
+```js
+{ '#line': 'row',    values: { id: 1, name: 'Ana' } }   // read by the columns
+{ '#line': 'array',  values: [1, 'Ana'] }               // position is the column
+{ '#line': 'sparse', values: { A: 1, F: 'Ana' } }       // cells by column letter
+{ '#line': 'empty' }                                     // a row and nothing in it
+```
+
+**Options on the row itself.** `height` (in points), `hidden` and a `style`
+for the whole row have nowhere to go on a bare array — every position there is
+a cell — and that is the main reason for the command:
+
+```js
+{ '#line': 'array', values: ['Total'], style: { bold: true }, height: 22 }
+{ '#line': 'empty', hidden: true }
+```
+
+The row `style` is the same `{ bold?, highlight? }` a cell takes, and it sits
+*under* whatever the cells carry themselves: a bold row with one highlighted
+cell is both.
+
+**`sparse`, which has no bare shape.** Keyed by column letters as the sheet
+shows them, in any case, and the gaps stay gaps — a line that touches A and BZ
+writes two cells, not seventy-eight:
+
+```js
+{ '#line': 'sparse', values: { A: 'Total', BZ: 12 } }
+```
+
+**Saying which one it is.** An array *is* already unambiguous, and so is a
+record — `'row'` and `'array'` exist so a generic producer can be explicit
+instead of relying on what its values happen to look like.
+
+An empty line needs no command, incidentally: a bare `[]` is a row with
+nothing in it, and always was. `{ '#line': 'empty' }` is the same row with
+somewhere to hang `height` or `hidden`.
+
 ### Several worksheets in one stream
 
 A `#worksheet` message closes the sheet being written and opens a new one.
@@ -294,15 +347,13 @@ rows: [
 ]
 ```
 
-The `#` is what makes a message a command, and it is the only reserved
-character in the whole API: a record cannot have keys that start with one. It
-costs nothing — a column's `name`, which is what the header row shows, is free
-of the restriction, and only its `key` is not. A misspelled command (`#sheet`,
-`#worksheets`) is refused by name instead of going in as a blank row.
-
-Excel's own limits on a sheet name are checked as the sheet opens — 1 to 31
-characters, none of `\ / ? * [ ] :`, no two sheets alike — because a name it
-refuses is a file that will not open, and by then the rows are long gone.
+Sheet names are made to fit what Excel accepts, rather than refused: a name it
+would reject is a file that will not open, and by the time anyone finds out
+the rows are long gone. So the characters Excel forbids (`\ / ? * [ ] :`, and
+a leading or trailing `'`) are dropped, anything past 31 characters is cut, a
+sheet that arrives with no name gets `Sheet<n>`, and a name another sheet
+already took — which Excel compares without regard to case — gets a `(2)`, a
+`(3)`, and so on, with the number fitted inside the same 31 characters.
 
 #### How the workbook is assembled without knowing its sheets
 
@@ -457,9 +508,10 @@ the bare `fflate` — is mapped by an
 
 The public surface is `src/core/index.ts`, which exports `XlsxWriter`,
 `XlsxStream` and `createXlsxStream` plus the types callers need (`Column`,
-`Row`, `CellValue`, `SheetInput`, `WorksheetCommand`, `CompressionLevel`) and
-the `WORKSHEET` key itself, with the environment-specific faces under
-`src/node/index.ts` and `src/browser/index.ts`.
+`Row`, `CellValue`, `SheetInput`, `WorksheetCommand`, `LineCommand`,
+`RowOptions`, `CompressionLevel`) and the `WORKSHEET` and `LINE` keys
+themselves, with the environment-specific faces under `src/node/index.ts` and
+`src/browser/index.ts`.
 
 ```sh
 npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundle

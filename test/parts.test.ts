@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import {
-    checkSheetName,
     contentTypesXml,
     rootRelsXml,
     workbookRelsXml,
     workbookXml,
     worksheetPart,
+    sheetName,
 } from '../src/core/parts.js';
 
 const PROLOG = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
@@ -107,28 +107,40 @@ describe('workbookRelsXml', () => {
     });
 });
 
-describe('checkSheetName', () => {
-    it('takes a name Excel takes', () => {
-        assert.doesNotThrow(() => checkSheetName('Ventas 2024', ['Compras']));
+describe('sheetName', () => {
+    it('keeps a name Excel keeps', () => {
+        assert.equal(sheetName('Ventas 2024', ['Compras'], 2), 'Ventas 2024');
     });
 
-    it('refuses an empty name, and anything that is not one', () => {
-        assert.throws(() => checkSheetName('', []), /cannot be empty/);
-        assert.throws(() => checkSheetName(undefined as unknown as string, []), /cannot be empty/);
+    it('names a sheet that arrived with nothing to be called', () => {
+        assert.equal(sheetName(undefined, [], 1), 'Sheet1');
+        assert.equal(sheetName('', ['Sheet1'], 2), 'Sheet2');
+        assert.equal(sheetName(7 as unknown as string, [], 3), 'Sheet3');
     });
 
-    it('refuses a name longer than the 31 characters Excel allows', () => {
-        assert.doesNotThrow(() => checkSheetName('x'.repeat(31), []));
-        assert.throws(() => checkSheetName('x'.repeat(32), []), /31 characters/);
+    it('drops the characters Excel forbids instead of refusing the name', () => {
+        assert.equal(sheetName('Ventas/Compras', [], 1), 'VentasCompras');
+        assert.equal(sheetName('a\\b?c*d[e]f:g', [], 1), 'abcdefg');
+        assert.equal(sheetName("'draft'", [], 1), 'draft');
     });
 
-    it('refuses the characters Excel forbids', () => {
-        for (const name of ['a/b', 'a\\b', 'a?b', 'a*b', 'a[b', 'a]b', 'a:b']) {
-            assert.throws(() => checkSheetName(name, []), /forbids/, name);
-        }
+    it('falls back to the default when nothing survives the cleaning', () => {
+        assert.equal(sheetName('///', [], 4), 'Sheet4');
     });
 
-    it('refuses a name another sheet already took, whatever its case', () => {
-        assert.throws(() => checkSheetName('Ventas', ['Compras', 'ventas']), /already taken/);
+    it('cuts a name longer than the 31 characters Excel allows', () => {
+        assert.equal(sheetName('x'.repeat(40), [], 1), 'x'.repeat(31));
+    });
+
+    it('numbers a name another sheet already took, whatever its case', () => {
+        assert.equal(sheetName('Ventas', ['ventas'], 2), 'Ventas (2)');
+        assert.equal(sheetName('Ventas', ['Ventas', 'Ventas (2)'], 3), 'Ventas (3)');
+    });
+
+    it('makes room for the number inside the 31 characters', () => {
+        const long = 'x'.repeat(31);
+        const numbered = sheetName(long, [long], 2);
+        assert.equal(numbered.length, 31);
+        assert.equal(numbered, `${'x'.repeat(27)} (2)`);
     });
 });
