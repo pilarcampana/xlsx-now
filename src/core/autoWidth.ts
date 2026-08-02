@@ -30,6 +30,36 @@ export function cellTextLength(
     return String(value).length;
 }
 
+/**
+ * The widest digit of the normal font, in pixels — Calibri 11 at 96 dpi,
+ * which is the font a workbook has until one of its styles says otherwise —
+ * and the padding a column carries around its text: two pixels of margin on
+ * each side, and one more for the gridline.
+ */
+const MAX_DIGIT_WIDTH = 7;
+const COLUMN_PADDING_PIXELS = 5;
+
+/**
+ * A count of characters as the `width` a `<col>` carries.
+ *
+ * The two are not the same number, which is the whole of this function.
+ * ECMA-376 §18.3.1.13 measures a column in multiples of the widest digit of
+ * the normal font *plus the padding*, and stores it in 1/256ths:
+ *
+ * ```
+ * width = Truncate([{characters} * {digit width} + {5px padding}] / {digit width} * 256) / 256
+ * ```
+ *
+ * which is why Excel writes `8.7109375` for a column it autofitted to eight
+ * characters, and not `8`. Writing the count itself leaves every column short
+ * by that padding — the text ends up clipped, and a number or a date under it
+ * comes out as `##########`, which is the visible half of the same bug.
+ */
+export function columnWidth(characters: number): number {
+    const pixels = characters * MAX_DIGIT_WIDTH + COLUMN_PADDING_PIXELS;
+    return Math.trunc((pixels / MAX_DIGIT_WIDTH) * 256) / 256;
+}
+
 /** Why a max nobody can size a column by was refused. */
 function badMaxError(max: number): Error {
     return new Error(
@@ -75,11 +105,14 @@ export class WidthMeter {
     }
 
     /**
-     * What every column measured, by 0-based column. A column nobody wrote
-     * anything in is a hole — it keeps whatever `columnFormats` says about it,
-     * and Excel's default width when that says nothing either.
+     * What every column measured, as the `width` a `<col>` is written with —
+     * the characters it counted, plus the padding Excel measures a column by.
+     * A column nobody wrote anything in is a hole: it keeps whatever
+     * `columnFormats` says about it, and Excel's default width when that says
+     * nothing either.
      */
     columnWidths(): readonly number[] {
-        return this.widths;
+        // `map` keeps the holes as holes, which is what the sparse array is for.
+        return this.widths.map(columnWidth);
     }
 }

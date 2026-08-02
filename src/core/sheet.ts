@@ -44,7 +44,12 @@ function columnAt(col: string | number): number {
  * none of its own, and the row's style — and then the cell's — goes over it.
  */
 export interface ColumnFormat {
-    /** Width in characters, as Excel measures it. */
+    /**
+     * Width as Excel measures it: the number its own column-width dialog
+     * shows, which already carries the padding a column has around its text.
+     * It goes into the `<col>` as it is given — it is a width, not a count of
+     * characters to be worked into one.
+     */
     width?: number;
     /** Keeps the column in the sheet but out of sight. */
     hidden?: boolean;

@@ -502,6 +502,22 @@ cannot see is a *number format*: `1234.5` is measured as the six characters it
 is written as, not as the `1.234,50` a `numFmt` may show it as. A column whose
 format makes its values longer is a column to give a width to outright.
 
+**What lands in the `<col>` is not the count.** A column's `width` is measured
+in multiples of the widest digit of the normal font *plus* five pixels of
+padding — two of margin on each side, one for the gridline — and stored in
+1/256ths ([ECMA-376][ecma376] §18.3.1.13):
+
+```
+width = Truncate([{characters} * {digit width} + {5px padding}] / {digit width} * 256) / 256
+```
+
+which is why a column autofitted to eight characters is the `8.7109375` Excel
+writes, and not `8`. Ten characters of date come out as `width="10.7109375"`.
+Writing the count itself is what a column exactly as wide as its longest value
+looks like: the text is clipped, and a date or a number under it shows as
+`##########`. The digit width is Calibri 11's, 7 pixels at 96 dpi, which is
+the font a workbook has until one of its styles says otherwise.
+
 **A width given outright wins.** `columnFormats` is where the sheet says what
 it wants, and nothing measures over it — the two go together, and a format
 that says everything but the width gets the measured one filled in:

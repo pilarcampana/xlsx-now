@@ -4,6 +4,7 @@
 // tests generate rather than against the examples' output.
 import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
+import { columnWidth } from '../src/core/autoWidth.js';
 import { createXlsxStream } from '../src/core/createXlsxStream.js';
 import { DEFAULT_DATETIME_FORMAT } from '../src/core/styles.js';
 import type { Column, Row } from '../src/core/types.js';
@@ -290,14 +291,17 @@ describe('a workbook whose columns sized themselves, read back with exceljs', ()
     });
 
     it('gives each column the width of its longest cell, up to the maximum', () => {
+        // The width a column is written with is the characters it measured
+        // plus the padding Excel measures a column by, which is what keeps
+        // the value it was sized for from being clipped.
         // "id" against 1, 2 and 3; "Full name" against "Ana & Co <1>", which
         // is 12 and reaches the maximum exactly.
-        assert.equal(sheet.getColumn(1).width, 2);
-        assert.equal(sheet.getColumn(2).width, 12);
-        // The dates are `yyyy-mm-dd hh:mm:ss`, longer than the maximum.
-        assert.equal(sheet.getColumn(4).width, 12);
+        assert.equal(sheet.getColumn(1).width, columnWidth(2));
+        assert.equal(sheet.getColumn(2).width, columnWidth(12));
+        // The dates are longer than the maximum.
+        assert.equal(sheet.getColumn(4).width, columnWidth(12));
         // TRUE, FALSE, and the header longer than both.
-        assert.equal(sheet.getColumn(5).width, 6);
+        assert.equal(sheet.getColumn(5).width, columnWidth(6));
     });
 
     it('leaves the column that was given a width at the one it was given', () => {

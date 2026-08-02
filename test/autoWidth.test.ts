@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { WidthMeter, cellTextLength } from '../src/core/autoWidth.js';
+import { WidthMeter, cellTextLength, columnWidth } from '../src/core/autoWidth.js';
 import { DateFormats } from '../src/core/styles.js';
 import type { CellValue } from '../src/core/types.js';
 
@@ -48,13 +48,30 @@ describe('cellTextLength', () => {
     });
 });
 
+describe('columnWidth', () => {
+    it('is the characters plus the padding a column carries, in 1/256ths', () => {
+        // ECMA-376 §18.3.1.13: the count is not the width. Eight characters
+        // of Calibri 11 is the 8.7109375 Excel writes when it autofits one.
+        assert.equal(columnWidth(8), 8.7109375);
+        assert.equal(columnWidth(10), 10.7109375);
+    });
+
+    it('is wider than the text it was measured from, which is the point', () => {
+        // A column exactly as wide as its longest value clips it, and shows a
+        // date or a number under it as `####`.
+        for (const characters of [1, 3, 12, 50]) {
+            assert.ok(columnWidth(characters) > characters, `${characters}`);
+        }
+    });
+});
+
 describe('WidthMeter', () => {
     it('keeps the longest cell of the column', () => {
-        assert.equal(widthOf(50, ['ab', 'abcdef', 'abcd']), 6);
+        assert.equal(widthOf(50, ['ab', 'abcdef', 'abcd']), columnWidth(6));
     });
 
     it('stops the column at the maximum it was opened with', () => {
-        assert.equal(widthOf(4, ['ab', 'a very long line of text']), 4);
+        assert.equal(widthOf(4, ['ab', 'a very long line of text']), columnWidth(4));
     });
 
     it('leaves a column nobody wrote in without a width', () => {
@@ -67,8 +84,8 @@ describe('WidthMeter', () => {
         meter.see(0, 'ab');
         meter.see(5, 'abcdef');
         const widths = meter.columnWidths();
-        assert.equal(widths[0], 2);
-        assert.equal(widths[5], 6);
+        assert.equal(widths[0], columnWidth(2));
+        assert.equal(widths[5], columnWidth(6));
         assert.equal(widths[1], undefined);
     });
 
@@ -89,7 +106,7 @@ describe('WidthMeter', () => {
     it('measures a date by the formats the workbook it belongs to uses', () => {
         const meter = new WidthMeter(50, new DateFormats({ dateFormat: 'dddd d "de" mmmm' }));
         meter.see(0, new Date(2024, 0, 15));
-        assert.equal(meter.columnWidths()[0], 'dddd d "de" mmmm'.length);
+        assert.equal(meter.columnWidths()[0], columnWidth('dddd d "de" mmmm'.length));
     });
 
     it('refuses a maximum no column can be sized by', () => {
