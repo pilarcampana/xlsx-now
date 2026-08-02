@@ -258,3 +258,46 @@ describe('a generated container, read back with yauzl', () => {
         assert.ok(!tail.includes(Buffer.from('PK\x06\x07')), 'ZIP64 locator');
     });
 });
+
+describe('a workbook whose columns sized themselves, read back with exceljs', () => {
+    let sheet: ExcelJS.Worksheet;
+
+    before(async () => {
+        const bytes = await collect(
+            createXlsxStream({
+                sheetName: 'People',
+                columns: COLUMNS,
+                autoWidthMax: 12,
+                // C is said outright, so it stays at 30 however short its
+                // cells turn out to be.
+                columnFormats: { C: { width: 30 } },
+                rows: RECORDS,
+            }),
+        );
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+        const first = workbook.worksheets[0];
+        assert.ok(first, 'the workbook has no worksheets');
+        sheet = first;
+    });
+
+    it('gives each column the width of its longest cell, up to the maximum', () => {
+        // "id" against 1, 2 and 3; "Full name" against "Ana & Co <1>", which
+        // is 12 and reaches the maximum exactly.
+        assert.equal(sheet.getColumn(1).width, 2);
+        assert.equal(sheet.getColumn(2).width, 12);
+        // The dates are `yyyy-mm-dd hh:mm:ss`, longer than the maximum.
+        assert.equal(sheet.getColumn(4).width, 12);
+        // TRUE, FALSE, and the header longer than both.
+        assert.equal(sheet.getColumn(5).width, 6);
+    });
+
+    it('leaves the column that was given a width at the one it was given', () => {
+        assert.equal(sheet.getColumn(3).width, 30);
+    });
+
+    it('still holds every row it was handed', () => {
+        assert.equal(sheet.rowCount, RECORDS.length + 1);
+        assert.equal(sheet.getRow(2).getCell(2).value, 'Ana & Co <1>');
+    });
+});

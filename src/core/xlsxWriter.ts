@@ -1,3 +1,4 @@
+import { WidthMeter } from './autoWidth.js';
 import {
     checkRecord,
     isLineCommand,
@@ -19,7 +20,14 @@ import {
     worksheetPart,
     sheetName,
 } from './parts.js';
-import { cellRowXml, sheetHeaderXml, SHEET_FOOTER, type RowOptions } from './sheet.js';
+import {
+    cellRowXml,
+    sheetHeaderXml,
+    SHEET_FOOTER,
+    type ColumnFormats,
+    type Freeze,
+    type RowOptions,
+} from './sheet.js';
 import { StyleTable, type StyleSpec } from './styles.js';
 import type { CellRow, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
@@ -83,6 +91,16 @@ export class XlsxWriter {
     private readonly sheetNames: string[] = [];
     /** The columns of the sheet being written, if it has any. */
     private mode: ColumnsMode | undefined;
+    /** What the sheet's cells are measuring, when it sizes its columns by them. */
+    private widths: WidthMeter | undefined;
+    /**
+     * The header of a sheet whose columns are being measured: it cannot be
+     * written until the sheet closes, so what it will be made of waits here —
+     * the meter included — and the rows pile up behind it.
+     */
+    private pendingHeader:
+        | { freeze: Freeze; columnFormats: ColumnFormats | undefined; widths: WidthMeter }
+        | undefined;
     private open = false;
     private batch = '';
     private rowNumber = 1;
@@ -122,9 +140,12 @@ export class XlsxWriter {
     }
 
     private writeCellRow(row: CellRow, options?: RowOptions): void {
-        this.batch += cellRowXml(this.rowNumber, row, this.styles, options);
+        this.batch += cellRowXml(this.rowNumber, row, this.styles, options, this.widths);
         this.rowNumber++;
-        if (this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
+        // A sheet being measured has nowhere to push to: its `<cols>` is
+        // written from rows that have not arrived yet, so the whole worksheet
+        // waits until it closes.
+        if (!this.widths && this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
     }
 
     /**
@@ -137,6 +158,7 @@ export class XlsxWriter {
         const name = sheetName(asked, this.sheetNames, this.sheetNames.length + 1);
         const columns = sheet.columns ?? this.defaults.columns;
         const columnFormats = sheet.columnFormats ?? this.defaults.columnFormats;
+        const autoWidthMax = sheet.autoWidthMax ?? this.defaults.autoWidthMax;
         // A header row with no column in it is nobody's intention, so an
         // empty list reads as the rows mode — which is how a sheet opts out
         // of the columns the workbook declared.
@@ -148,10 +170,19 @@ export class XlsxWriter {
         };
 
         this.sheetNames.push(name);
-        // The worksheet stays open until the next command or `finish`: it is
-        // the one part whose length nobody knows yet.
-        this.zip.startEntry(worksheetPart(this.sheetNames.length));
-        this.batch = sheetHeaderXml(freeze, this.styles, columnFormats);
+        this.widths = autoWidthMax === undefined ? undefined : new WidthMeter(autoWidthMax);
+        if (this.widths) {
+            // Nothing of this sheet can go out yet: `<cols>` is written before
+            // the first row and the widths come from the last one.
+            this.pendingHeader = { freeze, columnFormats, widths: this.widths };
+            this.batch = '';
+        } else {
+            // The worksheet stays open until the next command or `finish`: it
+            // is the one part whose length nobody knows yet.
+            this.zip.startEntry(worksheetPart(this.sheetNames.length));
+            this.pendingHeader = undefined;
+            this.batch = sheetHeaderXml(freeze, this.styles, columnFormats);
+        }
         this.rowNumber = 1;
         this.mode = mode;
         this.open = true;
@@ -162,6 +193,17 @@ export class XlsxWriter {
 
     private closeSheet(): void {
         this.batch += SHEET_FOOTER;
+        if (this.pendingHeader) {
+            // Now the columns have been measured, so the header they were
+            // waiting for can be written and the sheet goes into the archive
+            // whole, in the place it would have taken anyway.
+            const { freeze, columnFormats, widths } = this.pendingHeader;
+            this.batch =
+                sheetHeaderXml(freeze, this.styles, columnFormats, widths.columnWidths()) +
+                this.batch;
+            this.pendingHeader = undefined;
+            this.zip.startEntry(worksheetPart(this.sheetNames.length));
+        }
         this.pushBatch();
         this.zip.endEntry();
         this.open = false;

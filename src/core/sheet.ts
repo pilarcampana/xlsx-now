@@ -1,3 +1,4 @@
+import type { WidthMeter } from './autoWidth.js';
 import { cellRef, cellXml, columnIndex } from './cell.js';
 import type { StyleRef, StyleTable } from './styles.js';
 import type { Cell, CellRow, StyledCell } from './types.js';
@@ -108,13 +109,39 @@ function columnFormatPairs(formats: ColumnFormats): [number, ColumnFormat][] {
 }
 
 /**
+ * The columns to write out: what the formats say about each one, plus a width
+ * for every column that measured one and was not given a width outright — a
+ * width said in `columnFormats` is the width, and the measuring is what fills
+ * in for the columns that said nothing.
+ */
+function columnLayout(
+    formats: ColumnFormats | undefined,
+    autoWidths: readonly (number | undefined)[] | undefined,
+): [number, ColumnFormat][] {
+    const layout = new Map<number, ColumnFormat>(formats ? columnFormatPairs(formats) : []);
+    autoWidths?.forEach((width, index) => {
+        if (width === undefined) return;
+        const format = layout.get(index);
+        if (format?.width !== undefined) return;
+        layout.set(index, format ? { ...format, width } : { width });
+    });
+    // A `<cols>` runs left to right, and the two sources are in no order
+    // between them.
+    return [...layout].sort(([a], [b]) => a - b);
+}
+
+/**
  * The `<cols>` of a worksheet, which is where a column's width, its style and
  * whether it is shown at all are kept — one `<col>` per column, spanning the
  * one it is for and no more. `customWidth` is what makes Excel apply the
  * width, the same way `customHeight` does for a row.
  */
-function colsXml(formats: ColumnFormats, styles: StyleTable): string {
-    const cols = columnFormatPairs(formats)
+function colsXml(
+    formats: ColumnFormats | undefined,
+    styles: StyleTable,
+    autoWidths?: readonly (number | undefined)[],
+): string {
+    const cols = columnLayout(formats, autoWidths)
         .map(([index, format]) => {
             const at = index + 1;
             return (
@@ -131,13 +158,20 @@ function colsXml(formats: ColumnFormats, styles: StyleTable): string {
     return cols ? `<cols>${cols}</cols>` : '';
 }
 
-/** Everything the worksheet carries before its first `<row>`. */
+/**
+ * Everything the worksheet carries before its first `<row>`. `autoWidths` is
+ * what the sheet's own cells measured, when it was written with an
+ * `autoWidthMax` — which is why a header is not always something the writer
+ * can hand over before the rows: `<cols>` goes ahead of `<sheetData>`, and
+ * those widths are not known until the last row of the sheet is in.
+ */
 export function sheetHeaderXml(
     freeze: Freeze,
     styles: StyleTable,
     columnFormats?: ColumnFormats,
+    autoWidths?: readonly (number | undefined)[],
 ): string {
-    const cols = columnFormats ? colsXml(columnFormats, styles) : '';
+    const cols = columnFormats || autoWidths ? colsXml(columnFormats, styles, autoWidths) : '';
     return SHEET_PROLOG + sheetViewsXml(freeze) + cols + '<sheetData>';
 }
 
@@ -200,12 +234,18 @@ export function isStyledCell(cell: Cell): cell is StyledCell {
  * column untouched; a `null` or an empty string is an empty cell, and is
  * written whenever it carries a style. An explicit `{ s }` with no value
  * writes the styled cell too — asking for the style is asking for the cell.
+ *
+ * `widths` is the sheet's meter, when it is sizing its columns by what they
+ * hold: every value goes through it on its way out, in the column it turned
+ * out to be written in — which is why this is where the measuring happens and
+ * not a pass of its own. Left out, nothing is measured.
  */
 export function cellRowXml(
     rowNumber: number,
     row: CellRow,
     styles: StyleTable,
     options?: RowOptions,
+    widths?: WidthMeter,
 ): string {
     let cells = '';
     let next = 0;
@@ -218,6 +258,7 @@ export function cellRowXml(
         }
         if (!isStyledCell(cell)) {
             cells += cellXml(cell, cellRef(next, rowNumber), styles.forValue(cell, undefined));
+            widths?.see(next, cell);
             next++;
             continue;
         }
@@ -235,6 +276,10 @@ export function cellRowXml(
             cell.f,
             cell.t,
         );
+        // A formula's cached result is what the column will have to show; a
+        // formula with no result in hand shows nothing until it is recalculated
+        // and so measures nothing.
+        widths?.see(at, cell.v);
         next = at + 1;
     }
     return `<row r="${rowNumber}"${rowAttributes(options, styles)}>${cells}</row>`;

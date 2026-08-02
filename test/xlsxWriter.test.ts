@@ -516,3 +516,113 @@ describe('XlsxWriter: the columns of the sheet', () => {
         assert.equal((byName.get('xl/styles.xml')?.text.match(/formatCode/g) ?? []).length, 1);
     });
 });
+
+describe('XlsxWriter: columns sized by what they hold', () => {
+    it('writes nothing about the columns when nobody asked for a width', async () => {
+        const { sheet } = await readXlsx(write({}, [['a very long line of text']]));
+        assert.ok(!sheet.includes('<cols>'), sheet);
+    });
+
+    it('writes no <cols> for a sheet that had nothing to measure', async () => {
+        // An empty `<cols/>` is a sheet Excel refuses to open.
+        const { sheet } = await readXlsx(write({ autoWidthMax: 20 }, [[null, '']]));
+        assert.ok(!sheet.includes('cols'), sheet);
+    });
+
+    it('sizes each column by its longest cell, header row included', async () => {
+        const { sheet } = await readXlsx(
+            write({ columns: COLUMNS, autoWidthMax: 50 }, [
+                { id: 1, full_name: 'Ana' },
+                { id: 22222, full_name: 'Bernardino' },
+            ]),
+        );
+        // "id" is the header, and 22222 is longer; "Full name" is 9, and
+        // "Bernardino" is 10.
+        assert.ok(sheet.includes('<col min="1" max="1" width="5" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes('<col min="2" max="2" width="10" customWidth="1"/>'), sheet);
+    });
+
+    it('keeps the <cols> ahead of the rows it was worked out from', async () => {
+        const { sheet } = await readXlsx(write({ autoWidthMax: 20 }, [['abc']]));
+        assert.ok(sheet.indexOf('<cols>') < sheet.indexOf('<sheetData>'), sheet);
+        assert.ok(sheet.indexOf('<sheetData>') < sheet.indexOf('<row '), sheet);
+    });
+
+    it('stops a column at the maximum, and leaves the shorter ones alone', async () => {
+        const { sheet } = await readXlsx(
+            write({ autoWidthMax: 8 }, [['abcd', 'a line nobody would want a column of']]),
+        );
+        assert.ok(sheet.includes('<col min="1" max="1" width="4" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes('<col min="2" max="2" width="8" customWidth="1"/>'), sheet);
+    });
+
+    it('leaves a column that was given a width at the one it was given', async () => {
+        const { sheet } = await readXlsx(
+            write({ autoWidthMax: 50, columnFormats: { A: { width: 3 } } }, [
+                ['a much longer line', 'other'],
+            ]),
+        );
+        assert.ok(sheet.includes('<col min="1" max="1" width="3" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes('<col min="2" max="2" width="5" customWidth="1"/>'), sheet);
+    });
+
+    it('measures a column whose format says everything but the width', async () => {
+        const { sheet } = await readXlsx(
+            write({ autoWidthMax: 50, columnFormats: { A: { hidden: true } } }, [['abcdef']]),
+        );
+        assert.ok(sheet.includes('<col min="1" max="1" width="6" customWidth="1" hidden="1"/>'), sheet);
+    });
+
+    it('measures the column a cell says it goes in, not the one it came in', async () => {
+        const { sheet } = await readXlsx(
+            write({ autoWidthMax: 50 }, [[{ v: 'abcdefg', col: 'D' }]]),
+        );
+        assert.ok(sheet.includes('<col min="4" max="4" width="7" customWidth="1"/>'), sheet);
+        assert.ok(!sheet.includes('min="1"'), sheet);
+    });
+
+    it('measures the result a formula carries, and nothing when it carries none', async () => {
+        const { sheet } = await readXlsx(
+            write({ autoWidthMax: 50 }, [[{ f: 'SUM(B1:B9)', v: 1234.5 }, { f: 'NOW()' }]]),
+        );
+        assert.ok(sheet.includes('<col min="1" max="1" width="6" customWidth="1"/>'), sheet);
+        assert.ok(!sheet.includes('min="2"'), sheet);
+    });
+
+    it('gives every sheet its own widths, and takes the max from the command that opened it', async () => {
+        const { sheets } = await readXlsx(
+            write({ autoWidthMax: 50 }, [
+                ['abcdef'],
+                { '#worksheet': 'Narrow', autoWidthMax: 2 },
+                ['abcdef'],
+                { '#worksheet': 'Plain', autoWidthMax: undefined },
+                ['abcdef'],
+            ]),
+        );
+        assert.ok(sheets[0]?.includes('width="6"'), sheets[0] ?? 'no first sheet');
+        assert.ok(sheets[1]?.includes('width="2"'), sheets[1] ?? 'no second sheet');
+        // `undefined` is a field the command left out, so the workbook's own
+        // max is what the third sheet gets.
+        assert.ok(sheets[2]?.includes('width="6"'), sheets[2] ?? 'no third sheet');
+    });
+
+    it('writes the sheet whole, in the place it would have taken anyway', async () => {
+        const { names, sheet } = await readXlsx(
+            write({ autoWidthMax: 20 }, [['abc'], { '#worksheet': 'Second' }, ['de']]),
+        );
+        assert.deepEqual(names, [
+            '[Content_Types].xml',
+            '_rels/.rels',
+            SHEET_PART,
+            'xl/worksheets/sheet2.xml',
+            'xl/styles.xml',
+            'xl/workbook.xml',
+            'xl/_rels/workbook.xml.rels',
+        ]);
+        assert.ok(sheet.endsWith('</sheetData></worksheet>'), sheet);
+    });
+
+    it('refuses a maximum no column can be sized by', () => {
+        assert.throws(() => write({ autoWidthMax: 0 }, [['a']]), /autoWidthMax/);
+    });
+});
