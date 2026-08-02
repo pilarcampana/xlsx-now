@@ -5,6 +5,7 @@
 // — and the convenience wrapper built on it.
 import { createWriteStream } from 'node:fs';
 import { createXlsxStream, type CreateXlsxStreamOptions } from '../core/createXlsxStream.js';
+import type { XlsxWriterOptions } from '../core/xlsxWriter.js';
 
 /**
  * A file as a Web `WritableStream<Uint8Array>`, to close a `pipeTo`.
@@ -77,6 +78,9 @@ export function createFileWritable(path: string): WritableStream<Uint8Array> {
  * Writes a whole `.xlsx` file from records that are not already a stream —
  * an array, a generator, a database cursor. Resolves once the file is closed.
  */
-export async function writeXlsxFile(path: string, options: CreateXlsxStreamOptions): Promise<void> {
+export async function writeXlsxFile<O extends XlsxWriterOptions>(
+    path: string,
+    options: CreateXlsxStreamOptions<O>,
+): Promise<void> {
     await createXlsxStream(options).pipeTo(createFileWritable(path));
 }
