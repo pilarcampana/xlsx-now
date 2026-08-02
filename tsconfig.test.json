@@ -1,22 +1,17 @@
-// The test build. Same sources, same strictness, one difference: the module
-// format.
+// The test build: the same sources and the same settings as the shipped one,
+// with the tests compiled alongside them into dist-test/.
 //
-// `nyc` measures coverage with Istanbul's `require` hook, which only ever sees
-// CommonJS — an ESM module is loaded by Node's own loader and comes out at 0%.
-// So the tests compile `src/` and `test/` to CommonJS in `dist-test/`, and the
-// source maps `tsc` emits alongside are what nyc uses to report the coverage
-// back against the `.ts` files it came from.
+// Nothing about the module format changes — the tests load the very ESM that
+// `npm run build` emits into dist/, which is the point: a package whose claim
+// is that its output loads unchanged in Node and in the browser should not be
+// tested through a transliteration of itself.
 //
-// The shipped ESM in `dist/` is still what `npm run build` produces and what
-// the package exports; this build exists only for the duration of a test run.
+// Coverage rides along on that: `c8` reads V8's own coverage, so there is
+// nothing to instrument and no module format it cannot see, and the source
+// maps `tsc` emits are what put the report back on the `.ts` files.
 {
     "extends": "./tsconfig.json",
     "compilerOptions": {
-        "module": "CommonJS",
-        "moduleResolution": "Node10",
-        // Meaningful only for a `module` that has one emit; here the ESM
-        // syntax in `src/` is deliberately being emitted as `require`.
-        "verbatimModuleSyntax": false,
         "outDir": "dist-test",
         "types": ["node", "mocha"],
         // Nothing consumes these types; the declarations are dead weight.

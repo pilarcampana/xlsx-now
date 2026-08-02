@@ -25,6 +25,9 @@ coverage
 # nyc test coverage
 .nyc_output
 
+# c8 raw V8 coverage, before it is turned into a report
+.c8_output
+
 # Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
 .grunt
 
@@ -81,7 +84,7 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
-# The CommonJS build the tests run on (see tsconfig.test.json)
+# The build the tests run on (see tsconfig.test.json)
 dist-test
 .output
 

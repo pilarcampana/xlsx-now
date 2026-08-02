@@ -365,8 +365,8 @@ npm run typecheck  # tsc --noEmit
 ## Tests
 
 ```sh
-npm test       # mocha
-npm run test-ci  # mocha under nyc: console summary, coverage/lcov.info, coverage/*.html
+npm test         # mocha
+npm run test-ci  # mocha under c8: console summary, coverage/lcov.info, coverage/*.html
 ```
 
 The tests live in [`test/`](test), are written in TypeScript against the
@@ -387,25 +387,32 @@ properties an OOXML consumer expects (ZIP 2.0, no ZIP64, deflate, sizes after
 the data, CRC recomputed from the inflated bytes) are asserted on the tests'
 own output, not just on the examples'.
 
-### The one thing that is not the shipped build
+### Coverage, and why it is `c8` and not `nyc`
 
-`npm test` compiles `src/` and `test/` to **CommonJS** in `dist-test/`
-([`tsconfig.test.json`](tsconfig.test.json)), and that is what mocha loads.
-The reason is coverage: `nyc` instruments through Istanbul's `require` hook,
-which only ever sees CommonJS — point it at an ES module and every file comes
-back at 0%. Same sources, same strictness, one different `module` setting;
-the source maps `tsc` emits alongside are what makes the report land back on
-the `.ts` files. The shipped ESM in `dist/` is untouched by any of this.
+`npm test` compiles `src/` and `test/` together into `dist-test/`
+([`tsconfig.test.json`](tsconfig.test.json)) with the same settings as the
+shipped build — same `module: NodeNext`, same strictness — and mocha loads
+that. So the tests run on the very ESM `npm run build` emits, which for a
+package whose claim is "the output loads unchanged in Node and in the
+browser" is the only version worth testing.
 
-The build is a script rather than a line in `package.json`
-([`scripts/build-tests.cjs`](scripts/build-tests.cjs)) because of its last
-step: the package is `"type": "module"`, so the CommonJS it just emitted
-needs its own `package.json` marker next to it, and writing that from a shell
-one-liner is where quoting stops being portable — AppVeyor runs the same
-`npm run test-ci` on Windows.
+That rules out `nyc`: it instruments through Istanbul's `require` hook, which
+only ever sees CommonJS. Point it at an ES module and every file comes back
+at 0% — the tests would have had to run on a CommonJS transliteration of the
+sources for the coverage tool's benefit. `c8` reads V8's own coverage
+instead, so there is nothing to instrument and no module format it cannot
+see, and `tsc`'s source maps put the report back on the `.ts` files.
 
-Coverage stands at 100% of lines and functions of `src/`, and one statement
-short of 100% of statements: the `if (!this.batch) return` guard in
+One thing about [`.c8rc.json`](.c8rc.json) is worth knowing before editing
+it: `src` points at `dist-test/src`, the **compiled** output, not at `src/`.
+That is what `--all` — the flag that makes a module no test ever imports show
+up at 0% instead of not showing up at all — scans, and pointing it at the
+TypeScript instead silently zeroes the whole report. `types.js` is excluded
+for the opposite reason: it is types only, so it compiles to an empty module
+that can never be covered.
+
+Coverage stands at 100% of the lines, statements and functions of `src/`, and
+one branch short of 100% of branches: the `if (!this.batch) return` guard in
 `XlsxWriter.pushBatch`, which nothing driving the writer from outside can
 reach (`finish()` always appends the worksheet footer before pushing).
 

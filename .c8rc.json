@@ -1,0 +1,8 @@
+{
+    "all": true,
+    "src": ["dist-test/src"],
+    "exclude": ["**/node_modules/**", "dist-test/test/**", "**/types.js"],
+    "reporter": ["text-summary", "lcovonly", "html"],
+    "reportDir": "coverage",
+    "tempDirectory": ".c8_output"
+}
