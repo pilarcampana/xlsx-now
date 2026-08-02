@@ -362,6 +362,60 @@ npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundl
 npm run typecheck  # tsc --noEmit
 ```
 
+## Tests
+
+```sh
+npm test         # mocha
+npm run test-ci  # mocha under c8: console summary, coverage/lcov.info, coverage/*.html
+```
+
+The tests live in [`test/`](test), are written in TypeScript against the
+sources in `src/` (never against `dist/`), and run on Node. The browser side
+is a second stage: what runs today is what Node can run, which turns out to
+be almost everything — `Blob`, `Response` and the Web Streams are all native
+here, so `src/browser/index.ts` is covered too, with only the DOM around it
+([`test/helpers/dom.ts`](test/helpers/dom.ts)) faked. Driving the real thing
+is still `npm run example:browser:test`.
+
+Every generated file is read back with implementations that had nothing to do
+with writing it — [`yauzl`](https://github.com/thejoshwolfe/yauzl) plus Node's
+own `zlib` for the container, [`exceljs`](https://github.com/exceljs/exceljs)
+for the workbook — for the same reason
+[`scripts/validate-xlsx.ts`](scripts/validate-xlsx.ts) does: checking with
+`fflate` would only prove that the writer agrees with itself. The container
+properties an OOXML consumer expects (ZIP 2.0, no ZIP64, deflate, sizes after
+the data, CRC recomputed from the inflated bytes) are asserted on the tests'
+own output, not just on the examples'.
+
+### Coverage, and why it is `c8` and not `nyc`
+
+`npm test` compiles `src/` and `test/` together into `dist-test/`
+([`tsconfig.test.json`](tsconfig.test.json)) with the same settings as the
+shipped build — same `module: NodeNext`, same strictness — and mocha loads
+that. So the tests run on the very ESM `npm run build` emits, which for a
+package whose claim is "the output loads unchanged in Node and in the
+browser" is the only version worth testing.
+
+That rules out `nyc`: it instruments through Istanbul's `require` hook, which
+only ever sees CommonJS. Point it at an ES module and every file comes back
+at 0% — the tests would have had to run on a CommonJS transliteration of the
+sources for the coverage tool's benefit. `c8` reads V8's own coverage
+instead, so there is nothing to instrument and no module format it cannot
+see, and `tsc`'s source maps put the report back on the `.ts` files.
+
+One thing about [`.c8rc.json`](.c8rc.json) is worth knowing before editing
+it: `src` points at `dist-test/src`, the **compiled** output, not at `src/`.
+That is what `--all` — the flag that makes a module no test ever imports show
+up at 0% instead of not showing up at all — scans, and pointing it at the
+TypeScript instead silently zeroes the whole report. `types.js` is excluded
+for the opposite reason: it is types only, so it compiles to an empty module
+that can never be covered.
+
+Coverage stands at 100% of the lines, statements and functions of `src/`, and
+one branch short of 100% of branches: the `if (!this.batch) return` guard in
+`XlsxWriter.pushBatch`, which nothing driving the writer from outside can
+reach (`finish()` always appends the worksheet footer before pushing).
+
 ## UMD build
 
 The ESM output above is the primary artifact, but it can't be consumed from a
@@ -484,6 +538,11 @@ columns — fails the freeze check.
 
 ## What this PoC does *not* cover yet
 
+- **The test suite in a browser.** [The tests](#tests) run on Node, where
+  `src/browser/index.ts` is covered against a faked DOM; running the same
+  suite in a real browser is the second stage. Until then, the closest thing
+  is `npm run example:browser:test`, which drives the example page through
+  Chromium.
 - **Reading `.xlsx`.** Not attempted — this is a well-solved problem
   (SheetJS, `exceljs`); no reason to build it from scratch here.
 - **True OS-level streaming download in the browser without File System
