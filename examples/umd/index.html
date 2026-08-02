@@ -4,15 +4,17 @@
 <meta charset="utf-8" />
 <title>xlsx-now UMD PoC</title>
 <!-- The whole point of the UMD build: classic <script> tags, no module type, no
-     import map, no bundler. The bundle does not inline its dependency, so
-     fflate is loaded first (it exposes window.fflate, which the bundle picks
-     up); the bundle itself then exposes everything on window.xlsxNow. -->
+     import map, no bundler. Nothing is inlined, so each file is loaded before
+     the one that reads it off the global it publishes: fflate as window.fflate,
+     the writer as window.xlsxNow, and the browser helpers — which are a second
+     bundle, not a second copy of the writer — as window.xlsxNowBrowser. -->
 <script src="/node_modules/fflate/umd/index.js"></script>
 <script src="/dist/umd/xlsx-now.umd.js"></script>
+<script src="/dist/umd/xlsx-now-browser.umd.js"></script>
 </head>
 <body>
 <h1>xlsx-now — UMD (script tag) PoC</h1>
-<p>Same core writer as the ESM example, loaded as a plain global.</p>
+<p>Same core writer and same browser helpers as the ESM example, loaded as plain globals.</p>
 <button id="generate">Generate &amp; download</button>
 <p id="status"></p>
 <script>
@@ -31,25 +33,28 @@ async function* simulateUpstreamRows(count) {
 }
 
 function generateXlsxBlob(rowCount = 200) {
-    const webStream = window.xlsxNow.createXlsxStream({
+    return window.xlsxNowBrowser.createXlsxBlob({
         columns,
         rows: simulateUpstreamRows(rowCount),
         sheetName: 'Widgets',
     });
-    return new Response(webStream).blob();
 }
 
 document.getElementById('generate').addEventListener('click', () => {
     const status = document.getElementById('status');
-    generateXlsxBlob()
-        .then((blob) => {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'example-umd.xlsx';
-            a.click();
-            URL.revokeObjectURL(url);
-            status.textContent = 'Done.';
+    status.textContent = 'Generating...';
+    // `downloadXlsx` streams straight to disk through the File System Access
+    // API when the browser has it, and falls back to a Blob download where it
+    // does not — the same helper the ESM example uses, reached here as a global.
+    window.xlsxNowBrowser
+        .downloadXlsx('example-umd.xlsx', {
+            columns,
+            rows: simulateUpstreamRows(200),
+            sheetName: 'Widgets',
+        })
+        .then((route) => {
+            status.textContent =
+                route === 'file-system-access' ? 'Done (streamed to disk).' : 'Done (Blob fallback).';
         })
         .catch((err) => {
             console.error(err);
