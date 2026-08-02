@@ -2,7 +2,6 @@
 // API, which is exactly why they live outside src/core — core has to keep
 // loading unchanged in Node.
 import { createXlsxStream, type CreateXlsxStreamOptions } from '../core/createXlsxStream.js';
-import type { XlsxWriterOptions } from '../core/xlsxWriter.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -19,9 +18,7 @@ export type DownloadRoute = 'file-system-access' | 'blob';
  * whole file ends up in memory — use `downloadXlsx`, which avoids that when
  * the browser allows it.
  */
-export async function createXlsxBlob<O extends XlsxWriterOptions>(
-    options: CreateXlsxStreamOptions<O>,
-): Promise<Blob> {
+export async function createXlsxBlob(options: CreateXlsxStreamOptions): Promise<Blob> {
     // Response is a convenient built-in ReadableStream -> Blob adapter.
     const blob = await new Response(createXlsxStream(options)).blob();
     // `slice` is the way to stamp the MIME type without copying the bytes.
@@ -38,9 +35,9 @@ export async function createXlsxBlob<O extends XlsxWriterOptions>(
  * Must be called from a user gesture: the File System Access API opens a
  * native save dialog.
  */
-export async function downloadXlsx<O extends XlsxWriterOptions>(
+export async function downloadXlsx(
     filename: string,
-    options: CreateXlsxStreamOptions<O>,
+    options: CreateXlsxStreamOptions,
 ): Promise<DownloadRoute> {
     const showSaveFilePicker = (window as WindowWithSaveFilePicker).showSaveFilePicker;
 

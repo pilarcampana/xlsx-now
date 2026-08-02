@@ -83,17 +83,31 @@ export interface XlsxParts {
     /** Entry names, in the order the archive carries them. */
     names: string[];
     byName: Map<string, ZipEntry>;
-    /** `xl/worksheets/sheet1.xml`, the part every test looks at. */
+    /** `xl/worksheets/sheet1.xml`, the part most tests look at. */
     sheet: string;
+    /** Every worksheet, in the order the workbook declares them. */
+    sheets: string[];
+    /** The names the workbook gives its sheets, in the same order. */
+    sheetNames: string[];
+}
+
+/** The `name` of every `<sheet>` in `xl/workbook.xml`, in order. */
+function workbookSheetNames(workbookXml: string): string[] {
+    return [...workbookXml.matchAll(/<sheet name="(.*?)"/g)].map((match) => match[1] ?? '');
 }
 
 export async function readXlsx(bytes: Uint8Array): Promise<XlsxParts> {
     const entries = await readZipEntries(bytes);
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
+    const sheetNames = workbookSheetNames(byName.get('xl/workbook.xml')?.text ?? '');
     return {
         names: entries.map((entry) => entry.name),
         byName,
         sheet: byName.get(SHEET_PART)?.text ?? '',
+        sheets: sheetNames.map(
+            (_name, index) => byName.get(`xl/worksheets/sheet${index + 1}.xml`)?.text ?? '',
+        ),
+        sheetNames,
     };
 }
 
