@@ -8,7 +8,6 @@ import {
     lineCells,
     lineRecord,
     noColumnsError,
-    sparseCellRow,
     type LineCommand,
 } from '../src/core/command.js';
 
@@ -66,41 +65,6 @@ describe('noColumnsError', () => {
     });
 });
 
-describe('sparseCellRow', () => {
-    it('puts each value at the column its letter names', () => {
-        const row = sparseCellRow({ A: 'first', C: 3 });
-        assert.equal(row.length, 3);
-        assert.equal(row[0], 'first');
-        assert.equal(row[1], undefined, 'the gap was filled in');
-        assert.equal(row[2], 3);
-    });
-
-    it('reads the letters past Z, and reads them in any case', () => {
-        assert.equal(sparseCellRow({ AA: 1 }).length, 27);
-        assert.equal(sparseCellRow({ aa: 1 }).length, 27);
-    });
-
-    it('leaves the gaps as gaps, so a far column costs one cell', () => {
-        const row = sparseCellRow({ BZ: 'far' });
-        assert.equal(row.length, 78);
-        // A hole is not a value: nothing is written for it.
-        assert.equal(Object.keys(row).length, 1);
-    });
-
-    it('takes a styled cell like anywhere else', () => {
-        assert.deepEqual(sparseCellRow({ B: { value: 'x', style: { bold: true } } })[1], {
-            value: 'x',
-            style: { bold: true },
-        });
-    });
-
-    it('says what is not a column', () => {
-        assert.throws(() => sparseCellRow({ '1': 'x' }), /not a column/);
-        assert.throws(() => sparseCellRow({ 'A1': 'x' }), /column letters/);
-        assert.throws(() => sparseCellRow({ '': 'x' }), /not a column/);
-    });
-});
-
 describe('lineCells', () => {
     it('takes an empty line as a row with nothing in it', () => {
         assert.deepEqual(lineCells({ '#line': 'empty' }), []);
@@ -110,17 +74,12 @@ describe('lineCells', () => {
         assert.deepEqual(lineCells({ '#line': 'array', values: [1, 'a'] }), [1, 'a']);
     });
 
-    it('spreads a sparse line over its columns', () => {
-        assert.equal(lineCells({ '#line': 'sparse', values: { B: 2 } })?.length, 2);
-    });
-
     it('leaves a record to the caller, who has the columns', () => {
         assert.equal(lineCells({ '#line': 'row', values: { id: 1 } }), undefined);
     });
 
     it('takes a missing `values` as an empty line rather than a failure', () => {
         assert.deepEqual(lineCells({ '#line': 'array' } as unknown as LineCommand), []);
-        assert.deepEqual(lineCells({ '#line': 'sparse' } as unknown as LineCommand), []);
     });
 
     it('says what a line nobody knows was asked to be', () => {

@@ -20,7 +20,7 @@ import {
     sheetName,
 } from './parts.js';
 import { cellRowXml, sheetHeaderXml, SHEET_FOOTER, type RowOptions } from './sheet.js';
-import { stylesXml } from './styles.js';
+import { StyleTable, type StyleSpec } from './styles.js';
 import type { CellRow, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
 
@@ -47,6 +47,14 @@ export interface XlsxWriterOptions extends SheetOptions {
      */
     sheetName?: string;
     /**
+     * Styles to reuse by name, so a cell can ask for one with `s: 'money'`
+     * instead of writing it out again. Nothing has to be declared here — a
+     * cell can carry a style outright, and the table is built as the rows go
+     * by either way — but a name is what keeps one look in one place, and it
+     * is what a `base` builds on.
+     */
+    styles?: Readonly<Record<string, StyleSpec>>;
+    /**
      * Deflate effort, 0-9. Defaults to 6; `0` writes the parts uncompressed,
      * which is faster but leaves the file roughly ten times bigger.
      */
@@ -69,6 +77,8 @@ export class XlsxWriter {
     private readonly zip: ZipWriter;
     /** What every sheet starts from, before its own command overrides it. */
     private readonly defaults: XlsxWriterOptions;
+    /** The workbook's styles, filled in as its cells ask for things. */
+    private readonly styles: StyleTable;
     /** The sheets so far, in order; the last of them may still be open. */
     private readonly sheetNames: string[] = [];
     /** The columns of the sheet being written, if it has any. */
@@ -79,14 +89,15 @@ export class XlsxWriter {
 
     constructor(sink: (bytes: Uint8Array) => void, options: XlsxWriterOptions = {}) {
         this.defaults = options;
+        this.styles = new StyleTable(options.styles);
         this.zip = new ZipWriter(sink, options.compressionLevel ?? DEFAULT_COMPRESSION_LEVEL);
         this.discardOnFailure(() => {
-            // The parts that name no sheet, and so can go out before there is
-            // one. The first worksheet waits for the first message instead: it
-            // may be a command, and then that command is what configures it.
+            // The parts that depend on nothing, and so can go out before
+            // anything has arrived. The first worksheet waits for the first
+            // message instead: it may be a command, and then that command is
+            // what configures it.
             this.zip.writeEntry('[Content_Types].xml', contentTypesXml());
             this.zip.writeEntry('_rels/.rels', rootRelsXml());
-            this.zip.writeEntry('xl/styles.xml', stylesXml());
         });
     }
 
@@ -111,7 +122,7 @@ export class XlsxWriter {
     }
 
     private writeCellRow(row: CellRow, options?: RowOptions): void {
-        this.batch += cellRowXml(this.rowNumber, row, options);
+        this.batch += cellRowXml(this.rowNumber, row, this.styles, options);
         this.rowNumber++;
         if (this.batch.length >= PUSH_BATCH_CHARS) this.pushBatch();
     }
@@ -125,6 +136,7 @@ export class XlsxWriter {
     private openSheet(asked: unknown, sheet: SheetOptions): void {
         const name = sheetName(asked, this.sheetNames, this.sheetNames.length + 1);
         const columns = sheet.columns ?? this.defaults.columns;
+        const columnFormats = sheet.columnFormats ?? this.defaults.columnFormats;
         // A header row with no column in it is nobody's intention, so an
         // empty list reads as the rows mode — which is how a sheet opts out
         // of the columns the workbook declared.
@@ -139,7 +151,7 @@ export class XlsxWriter {
         // The worksheet stays open until the next command or `finish`: it is
         // the one part whose length nobody knows yet.
         this.zip.startEntry(worksheetPart(this.sheetNames.length));
-        this.batch = sheetHeaderXml(freeze);
+        this.batch = sheetHeaderXml(freeze, this.styles, columnFormats);
         this.rowNumber = 1;
         this.mode = mode;
         this.open = true;
@@ -213,8 +225,11 @@ export class XlsxWriter {
             // nobody gave anything to still closes with one empty sheet.
             if (!this.open) this.openFirstSheet();
             this.closeSheet();
-            // Now — and only now — every sheet is known, so the parts that
-            // have to name them can be written.
+            // Now — and only now — every sheet is known, and so is every
+            // style any of their cells asked for. The order of the entries
+            // inside the archive is nobody's business but the central
+            // directory's, which is what lets these three be written last.
+            this.zip.writeEntry('xl/styles.xml', this.styles.xml());
             this.zip.writeEntry('xl/workbook.xml', workbookXml(this.sheetNames));
             this.zip.writeEntry(
                 'xl/_rels/workbook.xml.rels',

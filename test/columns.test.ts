@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { columnsMode } from '../src/core/columns.js';
 import type { Column } from '../src/core/types.js';
 
+/** The fill a pk column asks for. It is `columns.ts`'s to name, not a caller's. */
+const PK_FILL = '#FFE699';
+
 const ID: Column = { name: 'id', pk: true };
 const YEAR: Column = { name: 'year', pk: true };
 const NAME: Column = { name: 'name' };
@@ -35,14 +38,14 @@ describe('columnsMode: the freeze the columns imply', () => {
 describe('columnsMode: the header row', () => {
     it('is the column names, bold, and highlighted where they are pks', () => {
         assert.deepEqual(columnsMode([ID, NAME]).headerRow, [
-            { value: 'id', style: { bold: true, highlight: true } },
-            { value: 'name', style: { bold: true, highlight: false } },
+            { v: 'id', s: { bold: true, bg: PK_FILL } },
+            { v: 'name', s: { bold: true } },
         ]);
     });
 
     it('shows the name, not the key it reads', () => {
         const header = columnsMode([{ name: 'Full name', key: 'full_name' }]).headerRow;
-        assert.deepEqual(header, [{ value: 'Full name', style: { bold: true, highlight: false } }]);
+        assert.deepEqual(header, [{ v: 'Full name', s: { bold: true } }]);
     });
 });
 
@@ -59,15 +62,25 @@ describe('columnsMode: one record as one row', () => {
 
     it('highlights the pk columns', () => {
         const { toCellRow } = columnsMode([ID, NAME]);
-        assert.deepEqual(toCellRow({ id: 1, name: 'Ana' }), [
-            { value: 1, style: { highlight: true } },
-            'Ana',
-        ]);
+        assert.deepEqual(toCellRow({ id: 1, name: 'Ana' }), [{ v: 1, s: { bg: PK_FILL } }, 'Ana']);
     });
 
     it('leaves a missing property empty rather than failing', () => {
         const { toCellRow } = columnsMode([ID, NAME]);
-        assert.deepEqual(toCellRow({}), [{ value: undefined, style: { highlight: true } }, undefined]);
+        assert.deepEqual(toCellRow({}), [{ v: undefined, s: { bg: PK_FILL } }, undefined]);
+    });
+
+    it('leaves a cell that says how it looks saying it', () => {
+        // The pk fill is what the column asks for, not what it insists on.
+        const { toCellRow } = columnsMode([ID]);
+        assert.deepEqual(toCellRow({ id: { v: 1, s: 'flagged' } }), [{ v: 1, s: 'flagged' }]);
+    });
+
+    it('fills a cell that says everything but how it looks', () => {
+        const { toCellRow } = columnsMode([ID]);
+        assert.deepEqual(toCellRow({ id: { v: 1, f: 'A1' } }), [
+            { v: 1, f: 'A1', s: { bg: PK_FILL } },
+        ]);
     });
 
     it('keeps every kind of value as it is', () => {

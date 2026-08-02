@@ -1,54 +1,470 @@
-import type { CellStyle } from './types.js';
-
-// Fixed style registry for the PoC. Indices must match the <cellXfs> order
-// in stylesXml() below — this is the same "s=<index>" mechanism xlsx-write-stream
-// already uses for number/date formats, extended here to bold headers and a
-// primary-key column fill.
+// The style table, built while the rows go by.
 //
-// The table is a bitmask of the style attributes, so an index is the
-// combination of the attributes a cell asked for and nothing has to be
-// registered while rows are being written.
-const BOLD = 1;
-const HIGHLIGHT = 2;
+// A cell asks for a style with an `s`, and `s` is a 0-based index into
+// styles.xml's <cellXfs> — so the table has to exist by the time the file is
+// read, not by the time the row is written. `xl/styles.xml` is written in
+// `finish()`, next to `xl/workbook.xml` and for the same reason: the order of
+// the entries inside the zip is nobody's business but the central directory's,
+// so a part that cannot be known upfront is simply written last.
+//
+// That is what lets a cell carry a whole style instead of a number. Every
+// distinct combination is registered once and reused from then on, so what
+// this holds is bounded by how many different styles the workbook has, not by
+// how many rows it has.
+import { hasTimeOfDay, sanitizeText } from './cell.js';
 
-export const STYLE = {
-    DEFAULT: 0,
-    BOLD,
-    HIGHLIGHT,
-    BOLD_HIGHLIGHT: BOLD | HIGHLIGHT,
-} as const;
+/**
+ * A colour, as hex: `#RGB`, `#RRGGBB`, `RRGGBB` or `AARRGGBB`, with the `#`
+ * optional. Everything is normalized to the ARGB that xlsx stores; without an
+ * alpha it is taken as opaque.
+ */
+export type Color = string;
 
-/** A 0-based index into styles.xml's <cellXfs>. */
-export type StyleIndex = (typeof STYLE)[keyof typeof STYLE];
+/** The line a border side is drawn with. Excel's own list, unabridged. */
+export type BorderStyle =
+    | 'thin'
+    | 'medium'
+    | 'thick'
+    | 'double'
+    | 'hair'
+    | 'dotted'
+    | 'dashed'
+    | 'dashDot'
+    | 'dashDotDot'
+    | 'mediumDashed'
+    | 'mediumDashDot'
+    | 'mediumDashDotDot'
+    | 'slantDashDot';
 
-/** The entry in the table above that holds `style`'s combination. */
-export function styleIndex(style: CellStyle | undefined): StyleIndex {
-    if (!style) return STYLE.DEFAULT;
-    return ((style.bold ? BOLD : 0) | (style.highlight ? HIGHLIGHT : 0)) as StyleIndex;
+/** One side of a border: the line alone, or the line and its colour. */
+export type BorderSide = BorderStyle | { style?: BorderStyle; color?: Color };
+
+export interface BorderSpec {
+    /** All four sides at once, under whatever a side says for itself. */
+    all?: BorderSide;
+    left?: BorderSide;
+    right?: BorderSide;
+    top?: BorderSide;
+    bottom?: BorderSide;
+    /** The diagonal line; `diagonalUp`/`diagonalDown` say which way it runs. */
+    diagonal?: BorderSide;
+    diagonalUp?: boolean;
+    diagonalDown?: boolean;
 }
 
-export function stylesXml(): string {
+/**
+ * Everything a cell can look like, flat. What xlsx keeps in four separate
+ * tables — the number format, the font, the fill, the border — is one object
+ * here, and taking it apart is this module's job.
+ */
+export interface StyleSpec {
+    /**
+     * A style declared in the writer options to start from; what this one says
+     * goes over it. It is how a cell reuses a named style and changes one
+     * thing about it: `{ base: 'money', bold: true }`.
+     */
+    base?: string;
+
+    /** Font name. Defaults to Calibri, which is what a sheet uses without one. */
+    font?: string;
+    /** Size in points. Defaults to 11. */
+    size?: number;
+    bold?: boolean;
+    italic?: boolean;
+    strike?: boolean;
+    /** `true` is a single underline; the rest are Excel's other three. */
+    underline?: boolean | 'single' | 'double' | 'singleAccounting' | 'doubleAccounting';
+    /** Superscript or subscript. */
+    script?: 'super' | 'sub';
+    /** Colour of the text. */
+    color?: Color;
+
+    /** Colour of the cell's background — a solid fill. */
+    bg?: Color;
+
+    align?: 'left' | 'center' | 'right' | 'fill' | 'justify' | 'centerContinuous' | 'distributed';
+    valign?: 'top' | 'middle' | 'bottom' | 'justify' | 'distributed';
+    /** Wraps the text instead of letting it run over the next cell. */
+    wrap?: boolean;
+    /**
+     * Degrees counterclockwise, -90 to 90. `255` is Excel's own spelling of
+     * the vertical layout, where the letters stack instead of turning.
+     */
+    rotate?: number;
+    /** Indent steps from the side the text is aligned to. */
+    indent?: number;
+    /** Shrinks the text until it fits, instead of wrapping or overflowing. */
+    shrink?: boolean;
+
+    /**
+     * The number format, as Excel spells it: `'#,##0.00'`, `'yyyy-mm-dd'`,
+     * `'0.00%'`. A number is one of Excel's built-in formats, by id.
+     */
+    numFmt?: string | number;
+
+    border?: BorderSpec;
+
+    /**
+     * Whether the cell is locked once the sheet is protected. Excel's own
+     * default is locked, which is what applies without this.
+     */
+    locked?: boolean;
+    /** Hides the formula from the formula bar on a protected sheet. */
+    hideFormula?: boolean;
+}
+
+/** What a cell, a row or a column asks for: a declared style by name, or one outright. */
+export type StyleRef = string | StyleSpec;
+
+/**
+ * What a `Date` is shown as when its cell asks for no format of its own —
+ * ISO order, which is the one spelling that reads the same everywhere.
+ */
+export const DATE_FORMAT = 'yyyy-mm-dd';
+export const DATETIME_FORMAT = 'yyyy-mm-dd hh:mm:ss';
+
+/** Excel's built-in formats take the ids below this one; ours start here. */
+const FIRST_CUSTOM_NUMFMT = 164;
+
+/** What a sheet looks like with no style at all — `<cellXfs>` entry 0. */
+const DEFAULT_FONT =
+    '<font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font>';
+/**
+ * Fill 0 and fill 1 are fixed by Excel: it takes `none` and `gray125` to be
+ * the first two entries whatever a file says, so a fill written over them is
+ * a fill nobody sees.
+ */
+const RESERVED_FILLS = [
+    '<fill><patternFill patternType="none"/></fill>',
+    '<fill><patternFill patternType="gray125"/></fill>',
+];
+const EMPTY_BORDER = '<border><left/><right/><top/><bottom/><diagonal/></border>';
+const DEFAULT_XF = '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>';
+
+const HORIZONTAL = {
+    left: 'left',
+    center: 'center',
+    right: 'right',
+    fill: 'fill',
+    justify: 'justify',
+    centerContinuous: 'centerContinuous',
+    distributed: 'distributed',
+} as const;
+/** `middle` is what everyone calls it; xlsx calls it `center`. */
+const VERTICAL = {
+    top: 'top',
+    middle: 'center',
+    bottom: 'bottom',
+    justify: 'justify',
+    distributed: 'distributed',
+} as const;
+
+/**
+ * A colour as the eight hex digits xlsx stores. Anything that is not a colour
+ * is refused here rather than written out as an attribute Excel will choke on
+ * once the rows are already gone.
+ */
+export function argb(color: Color): string {
+    const hex = color.replace(/^#/, '').toUpperCase();
+    if (!/^[0-9A-F]+$/.test(hex) || ![3, 6, 8].includes(hex.length)) {
+        throw new Error(
+            `"${color}" is not a colour: write it as #RGB, #RRGGBB, RRGGBB or AARRGGBB.`,
+        );
+    }
+    if (hex.length === 3) return `FF${hex.replace(/./g, (digit) => digit + digit)}`;
+    return hex.length === 6 ? `FF${hex}` : hex;
+}
+
+function colorXml(tag: string, color: Color | undefined): string {
+    return color === undefined ? '' : `<${tag} rgb="${argb(color)}"/>`;
+}
+
+/**
+ * Degrees as Excel counts them: 0-90 counterclockwise, and clockwise from 91
+ * on, where 91 is one degree down. `255`, the vertical layout, is its own
+ * value and passes through.
+ */
+function textRotation(rotate: number): number {
+    if (rotate === 255) return 255;
+    if (!Number.isInteger(rotate) || rotate < -90 || rotate > 90) {
+        throw new Error(
+            `Rotation ${rotate} is not between -90 and 90 (or 255, for vertical text).`,
+        );
+    }
+    return rotate < 0 ? 90 - rotate : rotate;
+}
+
+function fontXml(spec: StyleSpec): string {
+    const underline =
+        spec.underline === undefined || spec.underline === false
+            ? ''
+            : spec.underline === true || spec.underline === 'single'
+              ? '<u/>'
+              : `<u val="${spec.underline}"/>`;
     return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-        '<fonts count="2">' +
-        '<font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font>' +
-        '<font><b/><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font>' +
-        '</fonts>' +
-        '<fills count="3">' +
-        '<fill><patternFill patternType="none"/></fill>' +
-        '<fill><patternFill patternType="gray125"/></fill>' +
-        '<fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/><bgColor indexed="64"/></patternFill></fill>' +
-        '</fills>' +
-        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
-        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-        '<cellXfs count="4">' +
-        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' + // 0 DEFAULT
-        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' + // 1 BOLD
-        '<xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/>' + // 2 HIGHLIGHT
-        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' + // 3 BOLD_HIGHLIGHT
-        '</cellXfs>' +
-        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
-        '</styleSheet>'
+        '<font>' +
+        (spec.bold ? '<b/>' : '') +
+        (spec.italic ? '<i/>' : '') +
+        (spec.strike ? '<strike/>' : '') +
+        underline +
+        (spec.script ? `<vertAlign val="${spec.script === 'super' ? 'superscript' : 'subscript'}"/>` : '') +
+        `<sz val="${spec.size ?? 11}"/>` +
+        (spec.color === undefined ? '<color theme="1"/>' : colorXml('color', spec.color)) +
+        `<name val="${sanitizeText(spec.font ?? 'Calibri')}"/><family val="2"/>` +
+        // `minor` is the theme's body font, which is only Calibri while
+        // nobody has asked for another one.
+        (spec.font === undefined ? '<scheme val="minor"/>' : '') +
+        '</font>'
     );
+}
+
+function fillXml(bg: Color): string {
+    // `bgColor` is the pattern's *other* colour, and a solid pattern has none;
+    // `indexed="64"` is the "whatever the window is" Excel writes there.
+    return `<fill><patternFill patternType="solid">${colorXml('fgColor', bg)}<bgColor indexed="64"/></patternFill></fill>`;
+}
+
+function borderSideXml(tag: string, side: BorderSide | undefined): string {
+    if (side === undefined) return `<${tag}/>`;
+    const { style, color } = typeof side === 'string' ? { style: side, color: undefined } : side;
+    if (style === undefined) return `<${tag}/>`;
+    const rgb = colorXml('color', color);
+    return rgb ? `<${tag} style="${style}">${rgb}</${tag}>` : `<${tag} style="${style}"/>`;
+}
+
+function borderXml(border: BorderSpec): string {
+    const side = (own: BorderSide | undefined): BorderSide | undefined => own ?? border.all;
+    return (
+        '<border' +
+        (border.diagonalUp ? ' diagonalUp="1"' : '') +
+        (border.diagonalDown ? ' diagonalDown="1"' : '') +
+        '>' +
+        borderSideXml('left', side(border.left)) +
+        borderSideXml('right', side(border.right)) +
+        borderSideXml('top', side(border.top)) +
+        borderSideXml('bottom', side(border.bottom)) +
+        // The diagonal is not one of the four sides `all` draws: a border
+        // around a cell is not a border across it.
+        borderSideXml('diagonal', border.diagonal) +
+        '</border>'
+    );
+}
+
+function alignmentXml(spec: StyleSpec): string {
+    let attributes = '';
+    if (spec.align !== undefined) attributes += ` horizontal="${HORIZONTAL[spec.align]}"`;
+    if (spec.valign !== undefined) attributes += ` vertical="${VERTICAL[spec.valign]}"`;
+    if (spec.rotate !== undefined) attributes += ` textRotation="${textRotation(spec.rotate)}"`;
+    if (spec.wrap) attributes += ' wrapText="1"';
+    if (spec.indent !== undefined) attributes += ` indent="${spec.indent}"`;
+    if (spec.shrink) attributes += ' shrinkToFit="1"';
+    return attributes ? `<alignment${attributes}/>` : '';
+}
+
+function protectionXml(spec: StyleSpec): string {
+    let attributes = '';
+    if (spec.locked !== undefined) attributes += ` locked="${spec.locked ? 1 : 0}"`;
+    if (spec.hideFormula) attributes += ' hidden="1"';
+    return attributes ? `<protection${attributes}/>` : '';
+}
+
+/**
+ * One of styles.xml's tables: the entries in the order they were handed out,
+ * and the same rendered entry always under the same index. Deduplicating on
+ * the XML is what makes two styles that were spelled differently — a named one
+ * and the same one written out, `#ff0` and `FFFFFF00` — the one entry they are.
+ */
+class Table {
+    readonly entries: string[] = [];
+    private readonly indexes = new Map<string, number>();
+
+    constructor(initial: readonly string[]) {
+        for (const entry of initial) this.indexOf(entry);
+    }
+
+    indexOf(entry: string): number {
+        const known = this.indexes.get(entry);
+        if (known !== undefined) return known;
+        const index = this.entries.length;
+        this.entries.push(entry);
+        this.indexes.set(entry, index);
+        return index;
+    }
+}
+
+/** One `<name count="n">` section, left out entirely when it holds nothing. */
+function section(name: string, entries: readonly string[]): string {
+    if (!entries.length) return '';
+    return `<${name} count="${entries.length}">${entries.join('')}</${name}>`;
+}
+
+/**
+ * The `<cellXfs>` of a workbook, filled in as its cells ask for things.
+ *
+ * `0` is the default style — which is why an unstyled cell can leave the `s`
+ * attribute out altogether — and every combination past it is registered the
+ * first time something asks for it.
+ */
+export class StyleTable {
+    /** The styles the writer options declared, by name. */
+    private readonly declared: Readonly<Record<string, StyleSpec>>;
+
+    private readonly numFmts = new Table([]);
+    private readonly fonts = new Table([DEFAULT_FONT]);
+    private readonly fills = new Table(RESERVED_FILLS);
+    private readonly borders = new Table([EMPTY_BORDER]);
+    private readonly xfs = new Table([DEFAULT_XF]);
+
+    /** A declared style, merged with whatever it is based on. */
+    private readonly merged = new Map<string, StyleSpec>();
+    /** The two refs that repeat: a name, and a spec object by identity. */
+    private readonly byName = new Map<string, number>();
+    private readonly bySpec = new WeakMap<StyleSpec, number>();
+    /** `<index>|<format>` -> the same style with a date format added to it. */
+    private readonly dated = new Map<string, number>();
+
+    constructor(declared: Readonly<Record<string, StyleSpec>> = {}) {
+        this.declared = declared;
+    }
+
+    private numFmtId(numFmt: string | number | undefined): number {
+        if (numFmt === undefined) return 0;
+        // A number is one of Excel's own formats, which are not written out.
+        if (typeof numFmt === 'number') return numFmt;
+        return (
+            FIRST_CUSTOM_NUMFMT +
+            this.numFmts.indexOf(`<numFmt formatCode="${sanitizeText(numFmt)}"/>`)
+        );
+    }
+
+    /** One flat spec as one `<cellXfs>` entry, and every table under it. */
+    private register(spec: StyleSpec): number {
+        const numFmtId = this.numFmtId(spec.numFmt);
+        const fontId = this.fonts.indexOf(fontXml(spec));
+        const fillId = spec.bg === undefined ? 0 : this.fills.indexOf(fillXml(spec.bg));
+        const borderId =
+            spec.border === undefined ? 0 : this.borders.indexOf(borderXml(spec.border));
+        const alignment = alignmentXml(spec);
+        const protection = protectionXml(spec);
+
+        // `applyX` is what tells Excel the entry means the value next to it,
+        // rather than the one it would inherit from `xfId`.
+        const xf =
+            `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0"` +
+            (numFmtId ? ' applyNumberFormat="1"' : '') +
+            (fontId ? ' applyFont="1"' : '') +
+            (fillId ? ' applyFill="1"' : '') +
+            (borderId ? ' applyBorder="1"' : '') +
+            (alignment ? ' applyAlignment="1"' : '') +
+            (protection ? ' applyProtection="1"' : '');
+        return this.xfs.indexOf(
+            alignment || protection ? `${xf}>${alignment}${protection}</xf>` : `${xf}/>`,
+        );
+    }
+
+    /**
+     * A spec with its `base` folded in, so what `register` sees is one flat
+     * object. A `base` that leads back to where it started is refused rather
+     * than followed forever.
+     */
+    private resolve(spec: StyleSpec, seen: readonly string[]): StyleSpec {
+        if (spec.base === undefined) return spec;
+        if (seen.includes(spec.base)) {
+            throw new Error(
+                `Style "${spec.base}" is based on itself: ${[...seen, spec.base].join(' -> ')}.`,
+            );
+        }
+        const { base, ...own } = spec;
+        return { ...this.named(base, seen), ...own };
+    }
+
+    /**
+     * The declared style called `name`, merged and remembered. A name nobody
+     * declared is refused: taken as the default style instead, it would come
+     * out as a workbook that is silently missing what it asked for.
+     */
+    private named(name: string, seen: readonly string[] = []): StyleSpec {
+        const known = this.merged.get(name);
+        if (known !== undefined) return known;
+        const declared = this.declared[name];
+        if (declared === undefined) {
+            const names = Object.keys(this.declared);
+            throw new Error(
+                `Unknown style "${name}": declare it in the writer's "styles". ` +
+                    (names.length
+                        ? `The declared ones are ${names.join(', ')}.`
+                        : 'None are declared.'),
+            );
+        }
+        const spec = this.resolve(declared, [...seen, name]);
+        this.merged.set(name, spec);
+        return spec;
+    }
+
+    /** What a ref says, flat: a declared style by name, or the spec itself. */
+    spec(ref: StyleRef): StyleSpec {
+        return typeof ref === 'string' ? this.named(ref) : this.resolve(ref, []);
+    }
+
+    /** The `<cellXfs>` index for a ref. `undefined` is the default style, 0. */
+    index(ref: StyleRef | undefined): number {
+        if (ref === undefined) return 0;
+        if (typeof ref === 'string') {
+            const known = this.byName.get(ref);
+            if (known !== undefined) return known;
+            const index = this.register(this.named(ref));
+            this.byName.set(ref, index);
+            return index;
+        }
+        // A spec object the caller holds on to — one declared next to the
+        // columns, say — is recognized before anything is rendered at all.
+        const known = this.bySpec.get(ref);
+        if (known !== undefined) return known;
+        const index = this.register(this.resolve(ref, []));
+        this.bySpec.set(ref, index);
+        return index;
+    }
+
+    /**
+     * The index a cell holding `value` gets. It is `index(ref)`, except for a
+     * `Date`: a date is a number in a sheet, and a number with no format is
+     * shown as the five-digit serial it is. So a date whose style says nothing
+     * about the format gets one — the date alone, or the date and the time,
+     * depending on what the value carries.
+     */
+    forValue(value: unknown, ref: StyleRef | undefined): number {
+        if (!(value instanceof Date)) return this.index(ref);
+        const format = hasTimeOfDay(value) ? DATETIME_FORMAT : DATE_FORMAT;
+        const base = this.index(ref);
+        const key = `${base}|${format}`;
+        const known = this.dated.get(key);
+        if (known !== undefined) return known;
+        const spec = ref === undefined ? {} : this.spec(ref);
+        // A style that already says how to show the number is left alone:
+        // asking for a format is how a caller says it wants that one.
+        const index = spec.numFmt !== undefined ? base : this.register({ ...spec, numFmt: format });
+        this.dated.set(key, index);
+        return index;
+    }
+
+    /** The part, as it stands. Written once, at the end, and never before. */
+    xml(): string {
+        // The ids are `FIRST_CUSTOM_NUMFMT` plus the position, so each entry
+        // has to carry the id it was handed out under.
+        const numFmts = this.numFmts.entries.map((numFmt, index) =>
+            numFmt.replace('<numFmt ', `<numFmt numFmtId="${FIRST_CUSTOM_NUMFMT + index}" `),
+        );
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+            section('numFmts', numFmts) +
+            section('fonts', this.fonts.entries) +
+            section('fills', this.fills.entries) +
+            section('borders', this.borders.entries) +
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+            section('cellXfs', this.xfs.entries) +
+            '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+            '</styleSheet>'
+        );
+    }
 }

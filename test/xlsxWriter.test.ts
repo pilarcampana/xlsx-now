@@ -20,13 +20,17 @@ function write(options: XlsxWriterOptions, rows: readonly SheetInput[]): Buffer 
 }
 
 describe('XlsxWriter: the package it writes', () => {
-    it('carries the five parts an .xlsx needs, the sheet before what names it', async () => {
+    it('carries the five parts an .xlsx needs, the sheet before what describes it', async () => {
+        // The styles and the workbook come after the sheet because neither is
+        // known until the last row is in: what a cell asked for, and how many
+        // sheets there turned out to be. Order inside the archive is nobody's
+        // business but the central directory's.
         const { names } = await readXlsx(write({}, []));
         assert.deepEqual(names, [
             '[Content_Types].xml',
             '_rels/.rels',
-            'xl/styles.xml',
             SHEET_PART,
+            'xl/styles.xml',
             'xl/workbook.xml',
             'xl/_rels/workbook.xml.rels',
         ]);
@@ -75,7 +79,7 @@ describe('XlsxWriter: the rows mode', () => {
         assert.deepEqual(sheetRows(sheet), [
             '<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">a</t></is></c>' +
                 '<c r="B1" t="n"><v>1</v></c></row>',
-            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" t="n"><v>25569</v></c></row>',
+            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" t="n" s="1"><v>25569</v></c></row>',
         ]);
     });
 
@@ -109,10 +113,11 @@ describe('XlsxWriter: the columns mode', () => {
             write({ columns: COLUMNS }, [{ id: 1, full_name: 'Ana' }]),
         );
         const [header, data] = sheetRows(sheet);
-        // 3 is bold + highlight, 1 is bold, 2 is highlight.
-        assert.ok(header?.includes('<c r="A1" t="inlineStr" s="3">'), header ?? 'no header row');
-        assert.ok(header?.includes('<c r="B1" t="inlineStr" s="1">'), header ?? 'no header row');
-        assert.ok(data?.includes('<c r="A2" t="n" s="2">'), data ?? 'no data row');
+        // The indexes are handed out as the cells ask: the pk header first,
+        // then the plain header, then the pk fill on its own.
+        assert.ok(header?.includes('<c r="A1" t="inlineStr" s="1">'), header ?? 'no header row');
+        assert.ok(header?.includes('<c r="B1" t="inlineStr" s="2">'), header ?? 'no header row');
+        assert.ok(data?.includes('<c r="A2" t="n" s="3">'), data ?? 'no data row');
         assert.ok(data?.includes('<c r="B2" t="inlineStr">'), 'a plain cell got a style');
     });
 
@@ -299,9 +304,9 @@ describe('XlsxWriter: the #line command', () => {
         assert.equal(rows[1], '<row r="2"></row>');
     });
 
-    it('writes a sparse line by column letter, and nothing in between', async () => {
+    it('writes the columns the cells name, and nothing in between', async () => {
         const { sheet } = await readXlsx(
-            write({}, [{ '#line': 'sparse', values: { A: 'first', D: 4 } }]),
+            write({}, [{ '#line': 'array', values: [{ v: 'first', col: 'A' }, { v: 4, col: 'D' }] }]),
         );
         const [row = ''] = sheetRows(sheet);
         assert.ok(row.includes('r="A1"'), row);
@@ -312,7 +317,7 @@ describe('XlsxWriter: the #line command', () => {
     it('gives the row the height, the style and the hiding it asks for', async () => {
         const { sheet } = await readXlsx(
             write({}, [
-                { '#line': 'array', values: ['Total'], height: 22, style: { bold: true } },
+                { '#line': 'array', values: ['Total'], height: 22, s: { bold: true } },
                 { '#line': 'empty', hidden: true },
             ]),
         );
@@ -346,7 +351,7 @@ describe('XlsxWriter: rows of cells and records, together', () => {
         const { sheet } = await readXlsx(
             write({ columns: COLUMNS }, [
                 { id: 1, full_name: 'Ana' },
-                ['—', { value: 'a note across the sheet', style: { bold: true } }],
+                ['—', { v: 'a note across the sheet', s: { bold: true } }],
                 { id: 2, full_name: 'Beto' },
             ]),
         );
@@ -434,5 +439,80 @@ describe('XlsxWriter: streaming and failure', () => {
         // Any failure mid-write leaves the archive unreadable, and what came
         // out before it is not a file anyone can open.
         await assert.rejects(readXlsx(bytes()));
+    });
+});
+
+describe('XlsxWriter: the styles the workbook carries', () => {
+    it('writes the part at the end, with everything the rows asked for in it', async () => {
+        const { byName } = await readXlsx(
+            write({ styles: { title: { bold: true, size: 20 } } }, [
+                [{ v: 'Report', s: 'title' }],
+                [{ v: 1234.5, s: { numFmt: '#,##0.00' } }],
+            ]),
+        );
+        const styles = byName.get('xl/styles.xml')?.text ?? '';
+        assert.ok(styles.includes('<sz val="20"/>'), styles);
+        assert.ok(styles.includes('formatCode="#,##0.00"'), styles);
+    });
+
+    it('gives one index to one style, however many cells ask for it', async () => {
+        const { sheet, byName } = await readXlsx(
+            write({ styles: { title: { bold: true } } }, [
+                [{ v: 'a', s: 'title' }, { v: 'b', s: 'title' }, { v: 'c', s: { bold: true } }],
+            ]),
+        );
+        assert.equal((sheet.match(/ s="1"/g) ?? []).length, 3);
+        assert.equal((byName.get('xl/styles.xml')?.text.match(/<xf /g) ?? []).length, 3); // 1 in cellStyleXfs, 2 in cellXfs
+    });
+
+    it('says what a style nobody declared was, and writes no file', () => {
+        assert.throws(() => write({}, [[{ v: 1, s: 'nope' }]]), /Unknown style "nope"/);
+    });
+
+    it('formats a date so it is not read back as a number', async () => {
+        const { sheet, byName } = await readXlsx(write({}, [[new Date(2024, 0, 15)]]));
+        assert.ok(sheet.includes(' s="1"'), sheet);
+        assert.ok(byName.get('xl/styles.xml')?.text.includes('formatCode="yyyy-mm-dd"'));
+    });
+});
+
+describe('XlsxWriter: the columns of the sheet', () => {
+    it('writes what the options declare, before the first row', async () => {
+        const { sheet } = await readXlsx(
+            write({ columnFormats: { B: { width: 24 }, D: { hidden: true } } }, [['a']]),
+        );
+        assert.ok(sheet.includes('<col min="2" max="2" width="24" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes('<col min="4" max="4" hidden="1"/>'), sheet);
+        assert.ok(sheet.indexOf('<cols>') < sheet.indexOf('<sheetData>'));
+    });
+
+    it('lets a #worksheet command give the sheet its own', async () => {
+        const { sheets } = await readXlsx(
+            write({ columnFormats: [{ width: 8 }] }, [
+                ['first'],
+                { '#worksheet': 'Wide', columnFormats: [{ width: 40 }] },
+                ['second'],
+            ]),
+        );
+        assert.ok(sheets[0]?.includes('width="8"'), sheets[0] ?? 'no first sheet');
+        assert.ok(sheets[1]?.includes('width="40"'), sheets[1] ?? 'no second sheet');
+    });
+
+    it('falls back to the options for the sheet that declares none', async () => {
+        const { sheets } = await readXlsx(
+            write({ columnFormats: [{ width: 8 }] }, [['first'], { '#worksheet': 'Same' }, ['second']]),
+        );
+        assert.ok(sheets[1]?.includes('width="8"'), sheets[1] ?? 'no second sheet');
+    });
+
+    it('registers a column style in the same table the cells use', async () => {
+        const { sheet, byName } = await readXlsx(
+            write({ styles: { money: { numFmt: '#,##0.00' } }, columnFormats: { C: { s: 'money' } } }, [
+                [{ v: 1, s: 'money' }],
+            ]),
+        );
+        assert.ok(sheet.includes('<col min="3" max="3" style="1"/>'), sheet);
+        assert.ok(sheet.includes('<c r="A1" t="n" s="1">'), sheet);
+        assert.equal((byName.get('xl/styles.xml')?.text.match(/formatCode/g) ?? []).length, 1);
     });
 });

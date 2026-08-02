@@ -12,10 +12,11 @@ describe('the public surface', () => {
     });
 
     it('exports the style table and the zip writer under it', () => {
-        assert.equal(typeof core.styleIndex, 'function');
-        assert.equal(typeof core.stylesXml, 'function');
+        assert.equal(typeof core.StyleTable, 'function');
+        assert.equal(typeof core.argb, 'function');
         assert.equal(typeof core.ZipWriter, 'function');
-        assert.deepEqual(core.STYLE, { DEFAULT: 0, BOLD: 1, HIGHLIGHT: 2, BOLD_HIGHLIGHT: 3 });
+        assert.equal(core.DATE_FORMAT, 'yyyy-mm-dd');
+        assert.equal(core.DATETIME_FORMAT, 'yyyy-mm-dd hh:mm:ss');
         assert.equal(core.DEFAULT_COMPRESSION_LEVEL, 6);
     });
 
@@ -30,18 +31,19 @@ describe('the public surface', () => {
 
     it('exports nothing else', () => {
         assert.deepEqual(Object.keys(core).sort(), [
+            'DATETIME_FORMAT',
+            'DATE_FORMAT',
             'DEFAULT_COMPRESSION_LEVEL',
             'LINE',
-            'STYLE',
+            'StyleTable',
             'WORKSHEET',
             'XlsxStream',
             'XlsxWriter',
             'ZipWriter',
+            'argb',
             'createXlsxStream',
             'isLineCommand',
             'isWorksheetCommand',
-            'styleIndex',
-            'stylesXml',
         ]);
     });
 });

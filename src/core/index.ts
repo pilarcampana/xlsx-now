@@ -9,10 +9,29 @@ export {
     type LineCommand,
     type SheetInput,
     type SheetOptions,
-    type SparseValues,
     type WorksheetCommand,
 } from './command.js';
-export type { RowOptions } from './sheet.js';
-export { STYLE, styleIndex, stylesXml, type StyleIndex } from './styles.js';
+export type { ColumnFormat, ColumnFormats, RowOptions } from './sheet.js';
+export {
+    DATE_FORMAT,
+    DATETIME_FORMAT,
+    StyleTable,
+    argb,
+    type BorderSide,
+    type BorderSpec,
+    type BorderStyle,
+    type Color,
+    type StyleRef,
+    type StyleSpec,
+} from './styles.js';
 export { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
-export type { Cell, CellRow, CellStyle, CellValue, Column, ForAwaitable, Row } from './types.js';
+export type {
+    Cell,
+    CellRow,
+    CellType,
+    CellValue,
+    Column,
+    ForAwaitable,
+    Row,
+    StyledCell,
+} from './types.js';

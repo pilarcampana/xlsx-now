@@ -1,14 +1,38 @@
 import assert from 'node:assert/strict';
-import { cellRowXml, SHEET_FOOTER, sheetHeaderXml } from '../src/core/sheet.js';
+import {
+    cellRowXml,
+    SHEET_FOOTER,
+    sheetHeaderXml,
+    type ColumnFormats,
+    type RowOptions,
+} from '../src/core/sheet.js';
+import { StyleTable } from '../src/core/styles.js';
+import type { CellRow } from '../src/core/types.js';
+
+/**
+ * A row and the table its styles went into. Every test here starts from an
+ * empty table, so an index says which style was asked for first, not which
+ * one it is: `bold` is 1 in a table where bold was the first thing asked for.
+ */
+function rowXml(rowNumber: number, row: CellRow, options?: RowOptions): string {
+    return cellRowXml(rowNumber, row, new StyleTable(), options);
+}
 
 /** Just the `<sheetViews>` of a worksheet header. */
 function views(rows: number, columns: number): string {
-    return /<sheetViews>.*<\/sheetViews>/.exec(sheetHeaderXml({ rows, columns }))?.[0] ?? '';
+    const xml = sheetHeaderXml({ rows, columns }, new StyleTable());
+    return /<sheetViews>.*<\/sheetViews>/.exec(xml)?.[0] ?? '';
+}
+
+/** Just the `<cols>` of one, which is where a column's own layout goes. */
+function cols(columnFormats: ColumnFormats, styles = new StyleTable()): string {
+    const xml = sheetHeaderXml({ rows: 0, columns: 0 }, styles, columnFormats);
+    return /<cols>.*<\/cols>/.exec(xml)?.[0] ?? '';
 }
 
 describe('sheetHeaderXml', () => {
     it('opens the worksheet and leaves sheetData open', () => {
-        const xml = sheetHeaderXml({ rows: 0, columns: 0 });
+        const xml = sheetHeaderXml({ rows: 0, columns: 0 }, new StyleTable());
         assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'));
         assert.ok(xml.includes('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'));
         assert.ok(xml.endsWith('<sheetData>'));
@@ -52,81 +76,180 @@ describe('SHEET_FOOTER', () => {
 describe('cellRowXml', () => {
     it('numbers the row and puts each value in its own column', () => {
         assert.equal(
-            cellRowXml(3, [1, true]),
+            rowXml(3, [1, true]),
             '<row r="3"><c r="A3" t="n"><v>1</v></c><c r="B3" t="b"><v>1</v></c></row>',
         );
     });
 
     it('writes an empty row as an empty row', () => {
-        assert.equal(cellRowXml(1, []), '<row r="1"></row>');
+        assert.equal(rowXml(1, []), '<row r="1"></row>');
     });
 
     it('skips an undefined position without shifting the ones after it', () => {
         // The position *is* the column, so a hole has to stay a hole.
         assert.equal(
-            cellRowXml(1, ['a', undefined, 'b']),
+            rowXml(1, ['a', undefined, 'b']),
             '<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">a</t></is></c>' +
                 '<c r="C1" t="inlineStr"><is><t xml:space="preserve">b</t></is></c></row>',
         );
     });
 
     it('writes no cell for an unstyled empty value', () => {
-        assert.equal(cellRowXml(1, [null, '']), '<row r="1"></row>');
+        assert.equal(rowXml(1, [null, '']), '<row r="1"></row>');
     });
 
-    it('writes a styled empty cell, however it was asked for', () => {
+    it('writes a styled empty cell: asking for the style is asking for the cell', () => {
         assert.equal(
-            cellRowXml(1, [{ value: null, style: { highlight: true } }, { value: undefined, style: { bold: true } }]),
-            '<row r="1"><c r="A1" s="2"/><c r="B1" s="1"/></row>',
+            rowXml(1, [{ v: null, s: { bold: true } }, { s: { italic: true } }]),
+            '<row r="1"><c r="A1" s="1"/><c r="B1" s="2"/></row>',
         );
     });
 
-    it('takes a wrapper as a value plus a style', () => {
+    it('takes a cell as a value plus what it says about itself', () => {
         assert.equal(
-            cellRowXml(2, [{ value: 7, style: { bold: true, highlight: true } }]),
-            '<row r="2"><c r="A2" t="n" s="3"><v>7</v></c></row>',
+            rowXml(2, [{ v: 7, s: { bold: true } }]),
+            '<row r="2"><c r="A2" t="n" s="1"><v>7</v></c></row>',
         );
     });
 
-    it('takes a wrapper with no style as the default style', () => {
-        assert.equal(cellRowXml(2, [{ value: 7 }]), '<row r="2"><c r="A2" t="n"><v>7</v></c></row>');
+    it('takes a cell with no style as the default style', () => {
+        assert.equal(rowXml(2, [{ v: 7 }]), '<row r="2"><c r="A2" t="n"><v>7</v></c></row>');
     });
 
-    it('takes a Date as a value, not as a wrapper', () => {
-        // It is the one object a cell can be without asking for a style.
+    it('writes the formula and the type a cell carries', () => {
         assert.equal(
-            cellRowXml(1, [new Date(0)]),
-            '<row r="1"><c r="A1" t="n"><v>25569</v></c></row>',
+            rowXml(1, [{ v: 3, f: '=A1+A2' }, { v: '007', t: 'inlineStr' }]),
+            '<row r="1"><c r="A1"><f>A1+A2</f><v>3</v></c>' +
+                '<c r="B1" t="inlineStr"><is><t xml:space="preserve">007</t></is></c></row>',
         );
+    });
+
+    it('takes a Date as a value, not as a cell that says more', () => {
+        // It is the one object a cell can be on its own — and the one value
+        // that gets a style nobody asked for, so it is not shown as a serial.
+        assert.equal(
+            rowXml(1, [new Date(1970, 0, 1)]),
+            '<row r="1"><c r="A1" t="n" s="1"><v>25569</v></c></row>',
+        );
+    });
+
+    it('says what an object that is no kind of cell was meant to be', () => {
+        // Going in as a blank would hide it until someone opened the file.
+        assert.throws(() => rowXml(1, [{ value: 7 } as never]), /"value"/);
+        assert.throws(() => rowXml(1, [{} as never]), /this one is empty/);
+    });
+});
+
+describe('cellRowXml: the column a cell asks for', () => {
+    it('sends the cell to the column it names, by letter or by number', () => {
+        assert.equal(
+            rowXml(1, [{ v: 'far', col: 'D' }]),
+            '<row r="1"><c r="D1" t="inlineStr"><is><t xml:space="preserve">far</t></is></c></row>',
+        );
+        // Columns are numbered from 1, as the sheet shows them.
+        assert.equal(rowXml(1, [{ v: 1, col: 4 }]), '<row r="1"><c r="D1" t="n"><v>1</v></c></row>');
+    });
+
+    it('costs nothing for the columns it skips over', () => {
+        const row = rowXml(1, [{ v: 'a', col: 'A' }, { v: 'z', col: 'BZ' }]);
+        assert.ok(row.includes('r="A1"'), row);
+        assert.ok(row.includes('r="BZ1"'), row);
+        assert.equal((row.match(/<c /g) ?? []).length, 2);
+    });
+
+    it('carries on from there, so the cells after it need say nothing', () => {
+        const row = rowXml(1, [{ v: 1, col: 'C' }, 2, 3]);
+        assert.ok(row.includes('r="C1"') && row.includes('r="D1"') && row.includes('r="E1"'), row);
+    });
+
+    it('refuses a column the line has already gone past', () => {
+        // Two cells in one column is a file Excel opens as one of them, and
+        // which one is nobody's decision to leave to it.
+        assert.throws(() => rowXml(5, ['a', 'b', { v: 'c', col: 'A' }]), /row 5 has already written/);
+        assert.throws(() => rowXml(1, [{ v: 1, col: 'C' }, { v: 2, col: 'C' }]), /already written/);
+    });
+
+    it('says what is not a column at all', () => {
+        assert.throws(() => rowXml(1, [{ v: 1, col: 'A1' }]), /is not a column/);
+        assert.throws(() => rowXml(1, [{ v: 1, col: '' }]), /is not a column/);
+        assert.throws(() => rowXml(1, [{ v: 1, col: 0 }]), /is not a column/);
+        assert.throws(() => rowXml(1, [{ v: 1, col: 1.5 }]), /is not a column/);
     });
 });
 
 describe('cellRowXml: what the row itself asks for', () => {
     it('adds nothing when it asks for nothing', () => {
-        assert.equal(cellRowXml(1, [], {}), '<row r="1"></row>');
-        assert.equal(cellRowXml(1, [], { hidden: false }), '<row r="1"></row>');
+        assert.equal(rowXml(1, [], {}), '<row r="1"></row>');
+        assert.equal(rowXml(1, [], { hidden: false }), '<row r="1"></row>');
     });
 
     it('marks a height as custom, which is what makes Excel apply it', () => {
-        assert.equal(cellRowXml(1, [], { height: 22 }), '<row r="1" ht="22" customHeight="1"></row>');
+        assert.equal(rowXml(1, [], { height: 22 }), '<row r="1" ht="22" customHeight="1"></row>');
     });
 
     it('hides the row', () => {
-        assert.equal(cellRowXml(1, [], { hidden: true }), '<row r="1" hidden="1"></row>');
+        assert.equal(rowXml(1, [], { hidden: true }), '<row r="1" hidden="1"></row>');
     });
 
     it('styles the whole row, under whatever its cells carry', () => {
         assert.equal(
-            cellRowXml(1, [{ value: 'x', style: { highlight: true } }], { style: { bold: true } }),
-            '<row r="1" s="1" customFormat="1">' +
-                '<c r="A1" t="inlineStr" s="2"><is><t xml:space="preserve">x</t></is></c></row>',
+            rowXml(1, [{ v: 'x', s: { italic: true } }], { s: { bold: true } }),
+            '<row r="1" s="2" customFormat="1">' +
+                '<c r="A1" t="inlineStr" s="1"><is><t xml:space="preserve">x</t></is></c></row>',
         );
     });
 
     it('takes all three at once', () => {
         assert.equal(
-            cellRowXml(4, [], { height: 8, hidden: true, style: { bold: true, highlight: true } }),
-            '<row r="4" s="3" customFormat="1" ht="8" customHeight="1" hidden="1"></row>',
+            rowXml(4, [], { height: 8, hidden: true, s: { bold: true } }),
+            '<row r="4" s="1" customFormat="1" ht="8" customHeight="1" hidden="1"></row>',
         );
+    });
+});
+
+describe('sheetHeaderXml: the columns of the sheet', () => {
+    it('writes no <cols> when the sheet asks for none', () => {
+        // An empty `<cols/>` is a sheet Excel refuses to open.
+        assert.ok(!sheetHeaderXml({ rows: 0, columns: 0 }, new StyleTable()).includes('cols'));
+        assert.equal(cols([]), '');
+        assert.equal(cols({}), '');
+    });
+
+    it('comes before the rows, which is where a worksheet carries it', () => {
+        const xml = sheetHeaderXml({ rows: 1, columns: 0 }, new StyleTable(), [{ width: 8 }]);
+        assert.ok(xml.indexOf('<cols>') > xml.indexOf('</sheetViews>'), xml);
+        assert.ok(xml.indexOf('<cols>') < xml.indexOf('<sheetData>'), xml);
+    });
+
+    it('marks a width as custom, which is what makes Excel apply it', () => {
+        assert.equal(cols([{ width: 8 }]), '<cols><col min="1" max="1" width="8" customWidth="1"/></cols>');
+    });
+
+    it('spans one column per entry, at the position it was declared in', () => {
+        assert.equal(
+            cols([{ width: 8 }, undefined, { hidden: true }]),
+            '<cols><col min="1" max="1" width="8" customWidth="1"/><col min="3" max="3" hidden="1"/></cols>',
+        );
+    });
+
+    it('takes the same thing keyed by the column each one is for', () => {
+        assert.equal(cols({ A: { width: 8 }, C: { hidden: true } }), cols([{ width: 8 }, undefined, { hidden: true }]));
+    });
+
+    it('writes them left to right, whatever order the keys came in', () => {
+        assert.equal(cols({ C: { width: 3 }, A: { width: 1 } }), cols([{ width: 1 }, undefined, { width: 3 }]));
+    });
+
+    it('registers the column style, so its cells fall back to it', () => {
+        const styles = new StyleTable({ money: { numFmt: '#,##0.00' } });
+        assert.equal(cols({ B: { s: 'money' } }, styles), '<cols><col min="2" max="2" style="1"/></cols>');
+    });
+
+    it('reads a key that is a number as the column of that number', () => {
+        assert.equal(cols({ '3': { width: 3 } }), cols({ C: { width: 3 } }));
+    });
+
+    it('says what is not a column', () => {
+        assert.throws(() => cols({ 'A1': { width: 3 } }), /is not a column/);
     });
 });
