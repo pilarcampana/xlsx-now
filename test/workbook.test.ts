@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
 import { createXlsxStream } from '../src/core/createXlsxStream.js';
+import { DATETIME_FORMAT } from '../src/core/styles.js';
 import type { Column, Row } from '../src/core/types.js';
 import { collect } from './helpers/streams.js';
 import { MAX_VERSION, METHOD_DEFLATE, SHEET_PART, ZIP64_VERSION, readZipEntries } from './helpers/zip.js';
@@ -93,10 +94,17 @@ describe('a generated workbook, read back with exceljs', () => {
         assert.equal(row.getCell(5).value, true);
     });
 
-    it('writes a Date as its Excel serial number, and as nothing more', () => {
-        // Without a date `numFmt` — which the writer does not do yet — the
-        // value is right and a reader has no way to know it is a date.
-        assert.equal(sheet.getRow(2).getCell(4).value, WHEN.getTime() / 86400000 + 25569);
+    it('writes a Date as a date, and a reader reads one back', () => {
+        // The serial alone would be right and unreadable: a number with no
+        // format is shown as the five digits it is, so a date that asked for
+        // no style of its own gets the one that makes it a date.
+        const value = sheet.getRow(2).getCell(4).value;
+        assert.ok(value instanceof Date, `read back as ${typeof value}`);
+        assert.equal(value.getTime(), WHEN.getTime());
+    });
+
+    it('shows the time too, since the value carries one', () => {
+        assert.equal(sheet.getRow(2).getCell(4).numFmt, DATETIME_FORMAT);
     });
 
     it('reads a negative number and a false back too', () => {
@@ -160,8 +168,8 @@ describe('a workbook of several sheets, read back with exceljs', () => {
                     { '#worksheet': 'Notas', columns: [], freezeRows: 0 },
                     ['a note', 2],
                     { '#line': 'empty' },
-                    { '#line': 'array', values: ['a tall title'], height: 30, style: { bold: true } },
-                    { '#line': 'sparse', values: { C: 'far right' } },
+                    { '#line': 'array', values: ['a tall title'], height: 30, s: { bold: true } },
+                    { '#line': 'array', values: [{ v: 'far right', col: 'C' }] },
                     { '#line': 'array', values: ['out of sight'], hidden: true },
                 ],
             }),

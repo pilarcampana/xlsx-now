@@ -1,9 +1,8 @@
 // What goes into the writer. One stream carries the whole workbook: rows of
 // cells, records read by column, and the commands that open a worksheet or
 // spell a line out.
-import { columnIndex } from './cell.js';
-import type { RowOptions } from './sheet.js';
-import type { Cell, CellRow, Column, Row } from './types.js';
+import type { ColumnFormats, RowOptions } from './sheet.js';
+import type { CellRow, Column, Row } from './types.js';
 
 /**
  * The keys that make a message a command instead of a row: the worksheet to
@@ -31,6 +30,14 @@ export interface SheetOptions {
      * has no header of its own and takes rows of cells alone.
      */
     columns?: readonly Column[];
+    /**
+     * How wide the sheet's columns are, whether they are shown, and what
+     * their cells look like without a style of their own. This is the sheet's
+     * layout and `columns` is how a record is read, so the two are declared
+     * apart: a sheet written from arrays has no `columns` and can still say
+     * that its column C is 30 characters wide.
+     */
+    columnFormats?: ColumnFormats;
     /** Rows fixed at the top of the sheet. Defaults to 0, or to 1 with `columns`. */
     freezeRows?: number;
     /**
@@ -56,36 +63,32 @@ export interface SheetOptions {
 export type WorksheetCommand = SheetOptions & { [WORKSHEET]: string };
 
 /**
- * Cells by column, for a line that only touches a few of them:
- * `{ A: 'total', F: 12 }`. The keys are column letters, as the sheet shows
- * them; a value is a cell like any other, bare or `{ value, style }`.
- */
-export type SparseValues = Record<string, Cell>;
-
-/**
- * One line, said outright instead of left to be recognized. The four forms
- * are what a line can be, and `sparse` is the one that has no bare shape to
- * be autodetected from:
+ * One line, said outright instead of left to be recognized:
  *
  * ```js
  * { '#line': 'row', values: { id: 1, name: 'Ana' } }   // read by the columns
  * { '#line': 'array', values: [1, 'Ana'] }             // position is the column
- * { '#line': 'sparse', values: { A: 1, F: 'Ana' } }    // cells by column letter
  * { '#line': 'empty' }                                 // a row and nothing in it
  * ```
  *
- * The point of saying it outright is `RowOptions`: `height`, `hidden` and a
- * `style` for the whole row have nowhere to go on a bare array or record.
+ * The point of saying it outright is `RowOptions`: `height`, `hidden` and an
+ * `s` for the whole row have nowhere to go on a bare array or record.
  *
  * ```js
- * { '#line': 'array', values: ['Total'], style: { bold: true }, height: 22 }
+ * { '#line': 'array', values: ['Total'], s: { bold: true }, height: 22 }
+ * ```
+ *
+ * A line that only touches a few far-apart columns needs no form of its own:
+ * a cell says which column it goes in.
+ *
+ * ```js
+ * { '#line': 'array', values: [{ v: 'total', col: 'A' }, { v: 12, col: 'F' }] }
  * ```
  */
 export type LineCommand = RowOptions &
     (
         | { [LINE]: 'row'; values: Row }
         | { [LINE]: 'array'; values: CellRow }
-        | { [LINE]: 'sparse'; values: SparseValues }
         | { [LINE]: 'empty'; values?: undefined }
     );
 
@@ -125,25 +128,6 @@ export function noColumnsError(): Error {
 }
 
 /**
- * Sparse values as the row of cells they describe. The holes between them are
- * left as holes — an absent position writes no cell at all — so a line that
- * touches column A and column BZ costs two cells, not seventy-eight.
- */
-export function sparseCellRow(values: SparseValues): CellRow {
-    const row: Cell[] = [];
-    for (const key in values) {
-        const index = columnIndex(key);
-        if (index === undefined) {
-            throw new Error(
-                `"${key}" is not a column: a sparse line is keyed by column letters ("A", "B", "AA").`,
-            );
-        }
-        row[index] = values[key];
-    }
-    return row;
-}
-
-/**
  * The cells a `#line` command spells out. `values` is taken as the kind says,
  * and a kind the writer does not know is refused by name — with `row` left to
  * the caller, which is the one form that needs the sheet's columns.
@@ -156,8 +140,6 @@ export function lineCells(command: LineCommand): CellRow | undefined {
             // Nothing to convert: `values` is already the row it will be
             // written as. Absent, the line is as empty as `empty` says.
             return command.values ?? [];
-        case 'sparse':
-            return command.values ? sparseCellRow(command.values) : [];
         case 'row':
             // The record still has to be read by the sheet's columns, which
             // this module knows nothing about.
@@ -165,7 +147,7 @@ export function lineCells(command: LineCommand): CellRow | undefined {
         default:
             throw new Error(
                 `Unknown line "${String((command as Record<string, unknown>)[LINE])}": ` +
-                    'a line is "row", "array", "sparse" or "empty".',
+                    'a line is "row", "array" or "empty".',
             );
     }
 }

@@ -1,10 +1,10 @@
 # xlsx-now
 
-XLSX fast outputs — a streaming XLSX writer with real cell styles (bold
-headers, highlighted primary-key columns), a frozen header row and as many
-worksheets as the stream cares to open, designed to run **unmodified in Node
-and in the browser**. The stream carries the workbook: rows, and the commands
-that open a sheet or spell a line out.
+XLSX fast outputs — a streaming XLSX writer with real cell styles (fonts,
+fills, borders, alignment, number and date formats), formulas, column widths,
+a frozen header row and as many worksheets as the stream cares to open,
+designed to run **unmodified in Node and in the browser**. The stream carries
+the workbook: rows, and the commands that open a sheet or spell a line out.
 
 ## Why not just fork `xlsx-write-stream`?
 
@@ -66,10 +66,11 @@ they come for free:
 All four are verified, on every face, not assumed. Underneath, the writer is
 split in layers:
 
-- **XLSX XML generation — no I/O at all.** `styles.ts` defines a small style
-  registry — a bitmask of the two attributes a cell can ask for, `bold` and
-  `highlight`, so the four combinations are the four entries `styles.xml`
-  already carries — and `sheet.ts` turns one row of cells into one `<row>`.
+- **XLSX XML generation — no I/O at all.** `styles.ts` is the style table:
+  it takes a flat description of what a cell should look like and takes it
+  apart into the four tables xlsx keeps — the number format, the font, the
+  fill, the border — deduplicating each one, and hands back the index the
+  cell writes as its `s`. `sheet.ts` turns one row of cells into one `<row>`.
   Plain synchronous string functions, nothing buffered. It's just string
   generation, which is half of what makes this isomorphic.
 - **The columns mode, on top of that.** `columns.ts` is the whole of it: given
@@ -79,8 +80,8 @@ split in layers:
 - **The commands, alongside the rows.** `command.ts` defines the messages that
   are not rows: `#worksheet`, which the writer turns into the end of one
   worksheet part and the start of the next, and `#line`, which is a row said
-  outright — with a height, a style or a column letter, none of which a bare
-  array has room for. See
+  outright — with a height, a style or the hiding of a row, none of which a
+  bare array has room for. See
   [Several worksheets in one stream](#several-worksheets-in-one-stream) for
   how the workbook is put together without ever knowing how many sheets are
   coming.
@@ -156,6 +157,10 @@ A message is one of three things:
 | `{ '#worksheet': 'Summary' }` | a command: everything after it goes to a new sheet |
 | `{ '#line': 'array', values: [...] }` | a command: the line said outright, options and all |
 
+Any position of a row — and any property of a record — is either a plain
+value or a cell that says more about itself: `{ v, s, f, t, col }`. See
+[Styles](#styles) and [The cell that says more](#the-cell-that-says-more).
+
 The first two are the same thing with a header on top, and they are not two
 modes to choose between: a sheet with `columns` takes records *and* rows of
 cells, in any order. The last one is those same two lines spelled out, for
@@ -191,6 +196,13 @@ A sheet with columns still takes rows of cells, which is how a separator, a
 note or a totals line goes in without a column to hold it. A record on a sheet
 with *no* columns is the one combination that fails, and it says so.
 
+A record's values are cells like any other, so one value can say how it looks
+without the record giving up on being read by key:
+
+```js
+{ id: 1, name: 'Widget 1', price: { v: 3.33, s: 'money' } }
+```
+
 ### The rows mode
 
 No columns, no keys: a row is an array, and the position is the column.
@@ -202,7 +214,7 @@ const xlsxStream = createXlsxStream({
     freezeRows: 1,
     freezeColumns: 1,
     rows: [
-        [{ value: 'id', style: { bold: true } }, { value: 'name', style: { bold: true } }],
+        [{ v: 'id', s: { bold: true } }, { v: 'name', s: { bold: true } }],
         [1, 'Widget 1'],
         [2, 'Widget 2', undefined, new Date()],
     ],
@@ -210,12 +222,8 @@ const xlsxStream = createXlsxStream({
 ```
 
 A position holds either a value — the same `string | number | boolean | Date |
-null` the columns mode takes — or `{ value, style }`. `style` is
-`{ bold?, highlight? }`: the same two attributes the header row and the pk
-columns are made of, and the only two `styles.xml` carries. They are a closed
-set because the style table is written into the archive before the first row
-arrives, so nothing can be registered later; every combination of the two is
-already in it.
+null` the columns mode takes — or a cell that says more about itself, which is
+the section below.
 
 Three things a position can be, and they are not the same thing:
 
@@ -223,9 +231,166 @@ Three things a position can be, and they are not the same thing:
 | --- | --- |
 | `undefined` (or a hole, `[1, , 3]`) | no cell at all |
 | `null` or `''` | an empty cell, written only if it carries a style |
-| `{ value: undefined, style }` | the styled cell — the wrapper is the ask |
+| `{ s }` with no value | the styled cell — asking for the style is asking for the cell |
 
 Rows can be as long or short as they happen to be; nothing has to line up.
+
+### The cell that says more
+
+`{ v, s, f, t, col }`. Every field is optional, the value included.
+
+| field | what it is |
+| --- | --- |
+| `v` | the value |
+| `s` | the style: a declared one by name, or one written out |
+| `f` | the formula, with or without a leading `=` |
+| `t` | what the cell holds, as xlsx spells it — read off `v` when it is not said |
+| `col` | the column to write it in: `'J'`, or `10` for the same one |
+
+```js
+[
+    { v: 1234.5, s: 'money' },                     // a declared style, by name
+    { v: new Date(), s: { numFmt: 'dd/mm/yyyy' } }, // a style written out
+    { v: 45, f: 'SUM(B2:B10)' },                   // a formula, and its result
+    { v: '007', t: 'inlineStr' },                  // a code, not the number 7
+    { v: 'Total', col: 'J' },                      // in J, not in the next one
+]
+```
+
+**`f`, and the value beside it.** What xlsx stores next to a formula is the
+*cached* result — what a reader shows until it recalculates. With a `v` the
+cell reads right straight away; without one it is blank until something
+recalculates it, which is a decision worth making on purpose.
+
+**`t`, for when the value is not what it looks like.** `'n'`, `'b'`, `'str'`,
+`'inlineStr'`, `'e'`. Left out it is read off `v`, which is right nearly
+always; saying it outright is how a code that looks like a number stays text,
+or a number that arrived as text goes in as a number.
+
+**`col`, and why there is no sparse form.** Columns are numbered from 1, as
+the sheet shows them, and letters work in any case. Whatever follows carries
+on from there, so a line that touches two far-apart columns costs two cells,
+not seventy-eight:
+
+```js
+{ '#line': 'array', values: [{ v: 'Total', col: 'A' }, { v: 12, col: 'BZ' }] }
+```
+
+A line only moves forward. A `col` pointing at a column the line has already
+written, or already gone past, is refused — two cells in one column is a file
+Excel opens as one of them, and which one is nobody's decision to leave to it.
+
+### Styles
+
+A style is one flat object, and the writer takes it apart into the four tables
+xlsx keeps it in:
+
+```js
+{
+    font: 'Calibri', size: 11, bold: true, italic: true, underline: 'double',
+    strike: true, script: 'super', color: '#003366',
+    bg: '#FFE699',
+    align: 'center', valign: 'middle', wrap: true, rotate: 90, indent: 1,
+    shrink: true,
+    numFmt: '#,##0.00',
+    border: { all: 'thin', bottom: { style: 'thick', color: '#f00' } },
+    locked: false, hideFormula: false,
+}
+```
+
+Colours are hex — `#RGB`, `#RRGGBB`, `RRGGBB` or `AARRGGBB`, the `#` optional
+— and anything that is not one is refused where it was written, not turned
+into an attribute that makes the file fail to open. `numFmt` is the format
+code as Excel spells it (`'yyyy-mm-dd'`, `'0.00%'`), or a number for one of
+Excel's built-in formats. `border.all` covers the four sides, under whatever
+a side says for itself; the diagonal is its own, with `diagonalUp` and
+`diagonalDown` to say which way it runs.
+
+**Declared once, asked for by name.** Nothing *has* to be declared — a cell
+can carry a style outright — but a name keeps one look in one place, and it is
+what `base` builds on:
+
+```js
+const xlsxStream = createXlsxStream({
+    styles: {
+        money: { numFmt: '#,##0.00', align: 'right' },
+        moneyTotal: { base: 'money', bold: true, border: { top: 'thin' } },
+    },
+    rows: [
+        [{ v: 3.33, s: 'money' }],
+        [{ v: 9.99, s: 'moneyTotal' }],
+        [{ v: 9.99, s: { base: 'money', color: '#c00' } }],  // the same, plus one thing
+    ],
+});
+```
+
+A name nobody declared is an error, not a cell that quietly comes out plain.
+
+**Where a style can go.** Three levels, and Excel resolves them in this order:
+
+| level | how |
+| --- | --- |
+| the cell | `{ v, s }` |
+| the row | `{ '#line': 'array', values: [...], s }` |
+| the column | `columnFormats` |
+
+**Nothing has to be known upfront.** The table is built as the rows go by and
+`xl/styles.xml` is written at the end, next to `xl/workbook.xml` and for the
+same reason — the order of the entries inside the archive is nobody's business
+but the central directory's. What it holds is bounded by how many *different*
+styles the workbook has, not by how many rows: two cells asking for the same
+thing, however each of them spelled it, get the same index.
+
+### Dates
+
+A date is a number in a sheet, and a number with no format is shown as the
+five-digit serial it is. So a `Date` whose cell asks for no format of its own
+gets one: `yyyy-mm-dd`, or `yyyy-mm-dd hh:mm:ss` when the value carries a time
+of day. A style that says `numFmt` is left alone — asking for a format is how
+a caller says it wants that one.
+
+The serial is the **wall clock the caller reads**, not the UTC instant. A
+sheet has no time zone: `new Date(2024, 0, 15)` in Buenos Aires has to come
+out of the file reading `2024-01-15`, and taking `getTime()` for the serial
+would write `2024-01-14 21:00`. So the date's own `getTimezoneOffset()` —
+daylight saving and all — is taken off first, and what gets written is the
+same reading `getFullYear()` and `getHours()` give.
+
+### The columns of a sheet: `columnFormats`
+
+How wide a column is, whether it is shown, and what its cells look like
+without a style of their own:
+
+```js
+const xlsxStream = createXlsxStream({
+    styles: { money: { numFmt: '#,##0.00' } },
+    columnFormats: {
+        B: { width: 24 },
+        C: { width: 12, s: 'money' },
+        D: { hidden: true },
+    },
+    rows,
+});
+```
+
+By position works too, which is the same thing said the other way:
+
+```js
+columnFormats: [{ width: 8 }, { width: 24 }, { width: 12, s: 'money' }]
+```
+
+This is the sheet's own layout and `columns` is how a record is read: they are
+declared apart because they do not have to line up, and a sheet written from
+arrays has no `columns` at all and can still say that its column C is twelve
+characters wide.
+
+Like `columns` and the freezes, `columnFormats` can be given in the writer
+options as the workbook's default and again on a `#worksheet` command for the
+sheet it opens.
+
+The column style costs nothing per cell — Excel applies it to every cell of
+the column that carries no style of its own, so it is written once in the
+worksheet's `<cols>` and never stamped on a row.
 
 ### Frozen rows and columns
 
@@ -258,36 +423,26 @@ the top of the worksheet, before the first row.
 ### Lines said outright: `#line`
 
 A row array and a record are recognized by their shape, which is all most
-lines need. `#line` is the same line said outright, and it buys three things
+lines need. `#line` is the same line said outright, and it buys two things
 that shape alone cannot express:
 
 ```js
-{ '#line': 'row',    values: { id: 1, name: 'Ana' } }   // read by the columns
-{ '#line': 'array',  values: [1, 'Ana'] }               // position is the column
-{ '#line': 'sparse', values: { A: 1, F: 'Ana' } }       // cells by column letter
-{ '#line': 'empty' }                                     // a row and nothing in it
+{ '#line': 'row',   values: { id: 1, name: 'Ana' } }   // read by the columns
+{ '#line': 'array', values: [1, 'Ana'] }               // position is the column
+{ '#line': 'empty' }                                   // a row and nothing in it
 ```
 
-**Options on the row itself.** `height` (in points), `hidden` and a `style`
-for the whole row have nowhere to go on a bare array — every position there is
-a cell — and that is the main reason for the command:
+**Options on the row itself.** `height` (in points), `hidden` and an `s` for
+the whole row have nowhere to go on a bare array — every position there is a
+cell — and that is the main reason for the command:
 
 ```js
-{ '#line': 'array', values: ['Total'], style: { bold: true }, height: 22 }
+{ '#line': 'array', values: ['Total'], s: { bold: true }, height: 22 }
 { '#line': 'empty', hidden: true }
 ```
 
-The row `style` is the same `{ bold?, highlight? }` a cell takes, and it sits
-*under* whatever the cells carry themselves: a bold row with one highlighted
-cell is both.
-
-**`sparse`, which has no bare shape.** Keyed by column letters as the sheet
-shows them, in any case, and the gaps stay gaps — a line that touches A and BZ
-writes two cells, not seventy-eight:
-
-```js
-{ '#line': 'sparse', values: { A: 'Total', BZ: 12 } }
-```
+The row's `s` is the same style a cell takes, and it sits *under* whatever the
+cells carry themselves: a bold row with one red cell is both.
 
 **Saying which one it is.** An array *is* already unambiguous, and so is a
 record — `'row'` and `'array'` exist so a generic producer can be explicit
@@ -319,8 +474,9 @@ const xlsxStream = createXlsxStream({
 });
 ```
 
-The command carries the sheet's own configuration — `columns`, `freezeRows`,
-`freezeColumns` — and what it leaves out falls back to the writer options,
+The command carries the sheet's own configuration — `columns`,
+`columnFormats`, `freezeRows`, `freezeColumns` — and what it leaves out falls
+back to the writer options,
 which are the workbook's defaults. So a table split across sheets repeats
 nothing:
 
@@ -371,12 +527,14 @@ extension:
   only two `.xml` parts that are not worksheets, `workbook.xml` and
   `styles.xml`. However many sheets arrive, they are already typed.
 - `xl/workbook.xml` and `xl/_rels/workbook.xml.rels` — the parts that list the
-  sheets by name — are written **last**, once no more of them can come.
+  sheets by name — are written **last**, once no more of them can come. So is
+  `xl/styles.xml`, for the same reason: what the cells asked for is not known
+  until the last of them is in.
 
-So the archive reads `[Content_Types].xml`, `_rels/.rels`, `xl/styles.xml`,
-one part per worksheet, and then the workbook that names them. Still one pass,
-still nothing buffered, and a workbook of a hundred sheets costs no more
-memory than a workbook of one.
+So the archive reads `[Content_Types].xml`, `_rels/.rels`, one part per
+worksheet, and then the styles and the workbook that names the sheets. Still
+one pass, still nothing buffered, and a workbook of a hundred sheets costs no
+more memory than a workbook of one.
 
 ### `new XlsxStream(...)` in a pipe chain
 
@@ -707,10 +865,12 @@ columns — fails the freeze check.
   Access API.** Firefox/Safari don't support `showSaveFilePicker`, so on
   those the current fallback still generates incrementally but has to
   materialize a `Blob` before the browser's normal download flow can start.
-- **Number/date formatting on top of styles.** `cell.ts` already writes
-  date values as Excel serial numbers; giving date columns a real date
-  `numFmt` (the same idea as the PK/header styles) is a small, natural
-  follow-up, not a redesign.
+- **Shared formulas and array formulas.** A cell's `f` is its own; the
+  `shared`/`array` forms, where one expression covers a range, are not
+  emitted. Nothing about them is ruled out by the design.
+- **Merged cells, conditional formats, data validation, charts.** All of them
+  are further parts or further elements of the worksheet, and none is
+  attempted here.
 - **Confirmation in Excel itself.** The container is now shaped the way Office
   documents it wants (ZIP 2.0, deflate), and the files read back correctly
   under `yauzl` and `exceljs` — and a two-sheet file converts cleanly through

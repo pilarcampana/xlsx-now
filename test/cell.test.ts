@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
-import { cellRef, cellXml, columnLetters, sanitizeText } from '../src/core/cell.js';
-import { STYLE } from '../src/core/styles.js';
+import {
+    cellRef,
+    cellXml,
+    columnLetters,
+    excelSerial,
+    hasTimeOfDay,
+    sanitizeText,
+} from '../src/core/cell.js';
+
+/** The two entries a cell can ask for here; the real ones come from the table. */
+const DEFAULT = 0;
+const STYLED = 2;
 
 describe('sanitizeText', () => {
     it('escapes the five XML entities', () => {
@@ -55,60 +65,147 @@ describe('cellRef', () => {
 
 describe('cellXml', () => {
     it('writes nothing for an empty value with the default style', () => {
-        assert.equal(cellXml(null, 'A1', STYLE.DEFAULT), '');
-        assert.equal(cellXml(undefined, 'A1', STYLE.DEFAULT), '');
-        assert.equal(cellXml('', 'A1', STYLE.DEFAULT), '');
+        assert.equal(cellXml(null, 'A1', DEFAULT), '');
+        assert.equal(cellXml(undefined, 'A1', DEFAULT), '');
+        assert.equal(cellXml('', 'A1', DEFAULT), '');
     });
 
     it('writes an empty cell when it carries a style', () => {
-        assert.equal(cellXml(null, 'A1', STYLE.HIGHLIGHT), '<c r="A1" s="2"/>');
-        assert.equal(cellXml('', 'B2', STYLE.BOLD), '<c r="B2" s="1"/>');
+        assert.equal(cellXml(null, 'A1', STYLED), '<c r="A1" s="2"/>');
+        assert.equal(cellXml('', 'B2', 1), '<c r="B2" s="1"/>');
     });
 
     it('writes numbers as numbers', () => {
-        assert.equal(cellXml(0, 'A1', STYLE.DEFAULT), '<c r="A1" t="n"><v>0</v></c>');
-        assert.equal(cellXml(-3.5, 'A1', STYLE.DEFAULT), '<c r="A1" t="n"><v>-3.5</v></c>');
+        assert.equal(cellXml(0, 'A1', DEFAULT), '<c r="A1" t="n"><v>0</v></c>');
+        assert.equal(cellXml(-3.5, 'A1', DEFAULT), '<c r="A1" t="n"><v>-3.5</v></c>');
     });
 
     it('falls back to text for a number XML cannot carry', () => {
         // NaN and the infinities have no numeric spelling in a sheet, so they
         // go in as what they read as.
-        assert.match(cellXml(NaN, 'A1', STYLE.DEFAULT), /t="inlineStr"/);
-        assert.match(cellXml(Infinity, 'A1', STYLE.DEFAULT), /<t xml:space="preserve">Infinity<\/t>/);
+        assert.match(cellXml(NaN, 'A1', DEFAULT), /t="inlineStr"/);
+        assert.match(cellXml(Infinity, 'A1', DEFAULT), /<t xml:space="preserve">Infinity<\/t>/);
     });
 
     it('writes booleans as 1 and 0', () => {
-        assert.equal(cellXml(true, 'A1', STYLE.DEFAULT), '<c r="A1" t="b"><v>1</v></c>');
-        assert.equal(cellXml(false, 'A1', STYLE.DEFAULT), '<c r="A1" t="b"><v>0</v></c>');
+        assert.equal(cellXml(true, 'A1', DEFAULT), '<c r="A1" t="b"><v>1</v></c>');
+        assert.equal(cellXml(false, 'A1', DEFAULT), '<c r="A1" t="b"><v>0</v></c>');
     });
 
     it('writes a Date as an Excel serial number', () => {
         // 1970-01-01 is day 25569 of Excel's own epoch.
+        assert.equal(cellXml(new Date(1970, 0, 1), 'A1', DEFAULT), '<c r="A1" t="n"><v>25569</v></c>');
         assert.equal(
-            cellXml(new Date(0), 'A1', STYLE.DEFAULT),
-            '<c r="A1" t="n"><v>25569</v></c>',
-        );
-        assert.equal(
-            cellXml(new Date('2024-01-15T12:30:00.000Z'), 'A1', STYLE.DEFAULT),
-            '<c r="A1" t="n"><v>45306.52083333333</v></c>',
+            cellXml(new Date(2024, 0, 15, 12, 0), 'A1', DEFAULT),
+            '<c r="A1" t="n"><v>45306.5</v></c>',
         );
     });
 
     it('writes strings inline, escaped, with the spaces preserved', () => {
         assert.equal(
-            cellXml(' a & b ', 'A1', STYLE.DEFAULT),
+            cellXml(' a & b ', 'A1', DEFAULT),
             '<c r="A1" t="inlineStr"><is><t xml:space="preserve"> a &amp; b </t></is></c>',
         );
     });
 
     it('carries the style index on every kind of cell', () => {
-        assert.match(cellXml(1, 'A1', STYLE.BOLD), /^<c r="A1" t="n" s="1">/);
-        assert.match(cellXml(true, 'A1', STYLE.HIGHLIGHT), /^<c r="A1" t="b" s="2">/);
-        assert.match(cellXml('x', 'A1', STYLE.BOLD_HIGHLIGHT), /^<c r="A1" t="inlineStr" s="3">/);
-        assert.match(cellXml(new Date(0), 'A1', STYLE.BOLD), /^<c r="A1" t="n" s="1">/);
+        assert.match(cellXml(1, 'A1', 1), /^<c r="A1" t="n" s="1">/);
+        assert.match(cellXml(true, 'A1', STYLED), /^<c r="A1" t="b" s="2">/);
+        assert.match(cellXml('x', 'A1', 3), /^<c r="A1" t="inlineStr" s="3">/);
+        assert.match(cellXml(new Date(1970, 0, 1), 'A1', 1), /^<c r="A1" t="n" s="1">/);
     });
 
     it('leaves the style attribute out for the default style', () => {
-        assert.doesNotMatch(cellXml(1, 'A1', STYLE.DEFAULT), / s=/);
+        assert.doesNotMatch(cellXml(1, 'A1', DEFAULT), / s=/);
+    });
+});
+
+describe('excelSerial', () => {
+    it('is the day count from Excel\'s own epoch', () => {
+        assert.equal(excelSerial(new Date(1970, 0, 1)), 25569);
+        assert.equal(excelSerial(new Date(1970, 0, 2)), 25570);
+    });
+
+    it('is a whole number for a date with no time on it, wherever it is written', () => {
+        // A sheet holds a wall clock, not an instant: taking `getTime()` for
+        // the serial would move every date by the writer's own offset, which
+        // west of Greenwich lands a midnight on the day before.
+        for (const date of [new Date(2024, 0, 15), new Date(2024, 6, 15)]) {
+            assert.ok(Number.isInteger(excelSerial(date)), `${date.toString()} is not a whole day`);
+        }
+    });
+
+    it('keeps the time of day the caller reads off the date', () => {
+        const noon = excelSerial(new Date(2024, 0, 15, 12, 0, 0));
+        assert.equal(noon - Math.floor(noon), 0.5);
+    });
+
+    it('follows the offset of the date itself, daylight saving and all', () => {
+        // Two dates six months apart are 182 whole days apart, even where
+        // only one of them is in daylight saving time.
+        const january = excelSerial(new Date(2024, 0, 15));
+        const july = excelSerial(new Date(2024, 6, 15));
+        assert.equal(july - january, 182);
+    });
+});
+
+describe('hasTimeOfDay', () => {
+    it('is what tells a date from a date and a time', () => {
+        assert.equal(hasTimeOfDay(new Date(2024, 0, 15)), false);
+        assert.equal(hasTimeOfDay(new Date(2024, 0, 15, 0, 0, 0, 1)), true);
+        assert.equal(hasTimeOfDay(new Date(2024, 0, 15, 12, 30)), true);
+    });
+});
+
+describe('cellXml: a formula', () => {
+    it('writes the expression, and the value next to it as the cached result', () => {
+        assert.equal(
+            cellXml(45, 'C3', DEFAULT, 'SUM(A1:A9)'),
+            '<c r="C3"><f>SUM(A1:A9)</f><v>45</v></c>',
+        );
+    });
+
+    it('leaves the cell for the reader to work out when no value came with it', () => {
+        assert.equal(cellXml(undefined, 'C3', DEFAULT, 'NOW()'), '<c r="C3"><f>NOW()</f></c>');
+    });
+
+    it('takes the expression with or without the = a sheet shows', () => {
+        assert.equal(cellXml(null, 'A1', DEFAULT, '=B1+1'), cellXml(null, 'A1', DEFAULT, 'B1+1'));
+    });
+
+    it('escapes what would otherwise close the element', () => {
+        assert.match(cellXml(null, 'A1', DEFAULT, 'IF(A1<2,"a & b","")'), /IF\(A1&lt;2,&quot;a &amp; b/);
+    });
+
+    it('carries the style and the type it is given', () => {
+        assert.equal(
+            cellXml('ok', 'A1', 3, 'B1', 'str'),
+            '<c r="A1" t="str" s="3"><f>B1</f><v>ok</v></c>',
+        );
+    });
+});
+
+describe('cellXml: the type said outright', () => {
+    it('keeps a number that is really a code from being shown as one', () => {
+        assert.equal(
+            cellXml('007', 'A1', DEFAULT, undefined, 'inlineStr'),
+            '<c r="A1" t="inlineStr"><is><t xml:space="preserve">007</t></is></c>',
+        );
+    });
+
+    it('writes a string as the number the caller says it is', () => {
+        assert.equal(cellXml('1.5', 'A1', DEFAULT, undefined, 'n'), '<c r="A1" t="n"><v>1.5</v></c>');
+    });
+
+    it('writes an error as the code a sheet shows', () => {
+        assert.equal(
+            cellXml('#N/A', 'A1', DEFAULT, undefined, 'e'),
+            '<c r="A1" t="e"><v>#N/A</v></c>',
+        );
+    });
+
+    it('is still an empty cell when there is nothing to type', () => {
+        assert.equal(cellXml(null, 'A1', DEFAULT, undefined, 'n'), '');
+        assert.equal(cellXml(null, 'A1', STYLED, undefined, 'n'), '<c r="A1" s="2"/>');
     });
 });
