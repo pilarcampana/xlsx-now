@@ -1,3 +1,5 @@
+"use strict";
+
 // UMD consumer, CommonJS side: a plain `require()` of the bundle — no ESM,
 // no import map, no bundler. `fflate` is not inlined in the bundle: the bundle
 // `require()`s it itself, resolved from node_modules like any other dependency.

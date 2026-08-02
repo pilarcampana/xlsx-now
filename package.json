@@ -4,6 +4,7 @@
   "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with styles (bold headers, PK columns)",
   "type": "module",
   "license": "MIT",
+  "repository": "ari-dc-uba-ar/xlsx-now",
   "exports": {
     ".": {
       "types": "./dist/src/core/index.d.ts",
@@ -36,6 +37,8 @@
     "build": "tsc && npm run build:umd",
     "build:umd": "rollup -c",
     "typecheck": "tsc --noEmit",
+    "test": "echo no tests yet",
+    "test-ci": "echo no tests yet",
     "benchmark": "npm run build && node dist/examples/node/benchmark.js",
     "validate": "npm run build && node dist/scripts/validate-xlsx.js",
     "example:node": "npm run build && node dist/examples/node/write-file.js",
@@ -52,10 +55,24 @@
     "@types/node": "^26.1.2",
     "@types/yauzl": "^3.4.0",
     "exceljs": "^4.4.0",
-    "playwright-core": "^1.62.0",
-    "rollup": "^4.62.3",
-    "server4test": "^1.0.0",
+    "mocha": "^12.0.0-rc.5",
+    "playwright-core": "^1.62.1",
+    "qa-control": "^0.9.2",
+    "rollup": "^4.62.4",
+    "server4test": "^1.0.2",
     "typescript": "^5.9.3",
     "yauzl": "^3.4.0"
+  },
+  "qa-control": {
+    "package-version": "0.9.2",
+    "run-in": "both",
+    "type": "lib",
+    "gha": "all",
+    "multilang": "no",
+    "test-appveyor": true,
+    "silenced":[
+      "packagejson_main_file_1_does_not_exists",
+      "invalid_files_section_in_package_json"
+    ]
   }
 }

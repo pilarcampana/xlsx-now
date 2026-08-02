@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # Generated example output
 /out/
+
+local-*
+*-local.*
