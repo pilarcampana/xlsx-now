@@ -17,6 +17,12 @@ export type Row = Record<string, Cell>;
  * writing: `{ v: '007', t: 'inlineStr' }` keeps a code that looks like a
  * number from being shown as `7`.
  *
+ * `str` and `inlineStr` are both text, and which of the two a cell is written
+ * as is decided by the cell, not by the caller: `str` is the *formula string*
+ * of the spec — the cached result of an `f` — and `inlineStr` is text the cell
+ * holds itself, in an `<is>` there is no room for next to a formula. So text
+ * asked for either way goes in as the one the cell has a place for.
+ *
  * There is no `s` here — the shared string table — because this writer has
  * none: a string goes into the cell it belongs to and nowhere else, which is
  * what lets a sheet be written without holding on to anything.

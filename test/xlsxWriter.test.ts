@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { XlsxWriter, type XlsxWriterOptions } from '../src/core/xlsxWriter.js';
 import type { SheetInput } from '../src/core/command.js';
 import type { CellRow, Column } from '../src/core/types.js';
+import { columnWidth } from '../src/core/autoWidth.js';
 import { recordingSink } from './helpers/streams.js';
 import { METHOD_DEFLATE, METHOD_STORE, SHEET_PART, readXlsx, sheetRows } from './helpers/zip.js';
 
@@ -77,9 +78,9 @@ describe('XlsxWriter: the rows mode', () => {
         const rows: CellRow[] = [['a', 1], [true, new Date(0)]];
         const { sheet } = await readXlsx(write({}, rows));
         assert.deepEqual(sheetRows(sheet), [
-            '<row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">a</t></is></c>' +
-                '<c r="B1" t="n"><v>1</v></c></row>',
-            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" t="n" s="1"><v>25569</v></c></row>',
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c>' +
+                '<c r="B1"><v>1</v></c></row>',
+            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" s="1"><v>25569</v></c></row>',
         ]);
     });
 
@@ -117,7 +118,7 @@ describe('XlsxWriter: the columns mode', () => {
         // then the plain header, then the pk fill on its own.
         assert.ok(header?.includes('<c r="A1" t="inlineStr" s="1">'), header ?? 'no header row');
         assert.ok(header?.includes('<c r="B1" t="inlineStr" s="2">'), header ?? 'no header row');
-        assert.ok(data?.includes('<c r="A2" t="n" s="3">'), data ?? 'no data row');
+        assert.ok(data?.includes('<c r="A2" s="3">'), data ?? 'no data row');
         assert.ok(data?.includes('<c r="B2" t="inlineStr">'), 'a plain cell got a style');
     });
 
@@ -484,7 +485,29 @@ describe('XlsxWriter: the styles the workbook carries', () => {
     it('formats a date so it is not read back as a number', async () => {
         const { sheet, byName } = await readXlsx(write({}, [[new Date(2024, 0, 15)]]));
         assert.ok(sheet.includes(' s="1"'), sheet);
-        assert.ok(byName.get('xl/styles.xml')?.text.includes('formatCode="yyyy-mm-dd"'));
+        const styles = byName.get('xl/styles.xml')?.text ?? '';
+        // The built-in short date: an id, so there is no format code in the
+        // file at all — what the day looks like is the reader's own.
+        assert.match(styles, /<cellXfs[^>]*><xf [^>]*\/><xf numFmtId="14"/, styles);
+        assert.ok(!styles.includes('numFmts'), styles);
+    });
+
+    it('refuses a date format nothing can be added to before it writes a byte', () => {
+        const { sink, bytes } = recordingSink();
+        assert.throws(() => new XlsxWriter(sink, { dateFormat: 15 }), /dateTimeFormat/);
+        assert.equal(bytes().length, 0);
+    });
+
+    it('takes the date format the workbook asked for, time of day and all', async () => {
+        const { byName } = await readXlsx(
+            write({ dateFormat: 'dd/mm/yyyy' }, [
+                [new Date(2024, 0, 15)],
+                [new Date(2024, 0, 15, 12, 30)],
+            ]),
+        );
+        const styles = byName.get('xl/styles.xml')?.text ?? '';
+        assert.ok(styles.includes('formatCode="dd/mm/yyyy"'), styles);
+        assert.ok(styles.includes('formatCode="dd/mm/yyyy hh:mm:ss"'), styles);
     });
 });
 
@@ -524,7 +547,7 @@ describe('XlsxWriter: the columns of the sheet', () => {
             ]),
         );
         assert.ok(sheet.includes('<col min="3" max="3" style="1"/>'), sheet);
-        assert.ok(sheet.includes('<c r="A1" t="n" s="1">'), sheet);
+        assert.ok(sheet.includes('<c r="A1" s="1">'), sheet);
         assert.equal((byName.get('xl/styles.xml')?.text.match(/formatCode/g) ?? []).length, 1);
     });
 });
@@ -541,6 +564,14 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         assert.ok(!sheet.includes('cols'), sheet);
     });
 
+    /**
+     * The `<col>` a column measured at `characters` comes out as — the count
+     * is not the `width`, which carries Excel's own padding on top of it.
+     */
+    function measured(at: number, characters: number, extra = ''): string {
+        return `<col min="${at}" max="${at}" width="${columnWidth(characters)}" customWidth="1"${extra}/>`;
+    }
+
     it('sizes each column by its longest cell, header row included', async () => {
         const { sheet } = await readXlsx(
             write({ columns: COLUMNS, autoWidthMax: 50 }, [
@@ -550,8 +581,8 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         );
         // "id" is the header, and 22222 is longer; "Full name" is 9, and
         // "Bernardino" is 10.
-        assert.ok(sheet.includes('<col min="1" max="1" width="5" customWidth="1"/>'), sheet);
-        assert.ok(sheet.includes('<col min="2" max="2" width="10" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes(measured(1, 5)), sheet);
+        assert.ok(sheet.includes(measured(2, 10)), sheet);
     });
 
     it('keeps the <cols> ahead of the rows it was worked out from', async () => {
@@ -564,8 +595,8 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         const { sheet } = await readXlsx(
             write({ autoWidthMax: 8 }, [['abcd', 'a line nobody would want a column of']]),
         );
-        assert.ok(sheet.includes('<col min="1" max="1" width="4" customWidth="1"/>'), sheet);
-        assert.ok(sheet.includes('<col min="2" max="2" width="8" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes(measured(1, 4)), sheet);
+        assert.ok(sheet.includes(measured(2, 8)), sheet);
     });
 
     it('leaves a column that was given a width at the one it was given', async () => {
@@ -574,22 +605,24 @@ describe('XlsxWriter: columns sized by what they hold', () => {
                 ['a much longer line', 'other'],
             ]),
         );
+        // The width a format gave is the width, and it is not padded over:
+        // it is what the sheet asked for, in the units Excel shows it in.
         assert.ok(sheet.includes('<col min="1" max="1" width="3" customWidth="1"/>'), sheet);
-        assert.ok(sheet.includes('<col min="2" max="2" width="5" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes(measured(2, 5)), sheet);
     });
 
     it('measures a column whose format says everything but the width', async () => {
         const { sheet } = await readXlsx(
             write({ autoWidthMax: 50, columnFormats: { A: { hidden: true } } }, [['abcdef']]),
         );
-        assert.ok(sheet.includes('<col min="1" max="1" width="6" customWidth="1" hidden="1"/>'), sheet);
+        assert.ok(sheet.includes(measured(1, 6, ' hidden="1"')), sheet);
     });
 
     it('measures the column a cell says it goes in, not the one it came in', async () => {
         const { sheet } = await readXlsx(
             write({ autoWidthMax: 50 }, [[{ v: 'abcdefg', col: 'D' }]]),
         );
-        assert.ok(sheet.includes('<col min="4" max="4" width="7" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes(measured(4, 7)), sheet);
         assert.ok(!sheet.includes('min="1"'), sheet);
     });
 
@@ -597,7 +630,7 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         const { sheet } = await readXlsx(
             write({ autoWidthMax: 50 }, [[{ f: 'SUM(B1:B9)', v: 1234.5 }, { f: 'NOW()' }]]),
         );
-        assert.ok(sheet.includes('<col min="1" max="1" width="6" customWidth="1"/>'), sheet);
+        assert.ok(sheet.includes(measured(1, 6)), sheet);
         assert.ok(!sheet.includes('min="2"'), sheet);
     });
 
@@ -611,11 +644,11 @@ describe('XlsxWriter: columns sized by what they hold', () => {
                 ['abcdef'],
             ]),
         );
-        assert.ok(sheets[0]?.includes('width="6"'), sheets[0] ?? 'no first sheet');
-        assert.ok(sheets[1]?.includes('width="2"'), sheets[1] ?? 'no second sheet');
+        assert.ok(sheets[0]?.includes(measured(1, 6)), sheets[0] ?? 'no first sheet');
+        assert.ok(sheets[1]?.includes(measured(1, 2)), sheets[1] ?? 'no second sheet');
         // `undefined` is a field the command left out, so the workbook's own
         // max is what the third sheet gets.
-        assert.ok(sheets[2]?.includes('width="6"'), sheets[2] ?? 'no third sheet');
+        assert.ok(sheets[2]?.includes(measured(1, 6)), sheets[2] ?? 'no third sheet');
     });
 
     it('leaves a blank sheet behind when one #worksheet follows another', async () => {
@@ -631,7 +664,7 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         assert.deepEqual(sheetNames, ['hoja1', 'hoja2']);
         assert.ok(sheets[0]?.includes('<sheetData></sheetData>'), sheets[0] ?? 'no first sheet');
         assert.ok(!sheets[0]?.includes('cols'), sheets[0] ?? 'no first sheet');
-        assert.ok(sheets[1]?.includes('width="3"'), sheets[1] ?? 'no second sheet');
+        assert.ok(sheets[1]?.includes(measured(1, 3)), sheets[1] ?? 'no second sheet');
     });
 
     it('writes the sheet whole, in the place it would have taken anyway', async () => {
