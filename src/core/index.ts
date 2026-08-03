@@ -13,14 +13,16 @@ export {
 } from './command.js';
 export type { ColumnFormat, ColumnFormats, RowOptions } from './sheet.js';
 export {
-    DATE_FORMAT,
-    DATETIME_FORMAT,
+    DEFAULT_DATE_FORMAT,
+    DEFAULT_DATETIME_FORMAT,
+    DateFormats,
     StyleTable,
     argb,
     type BorderSide,
     type BorderSpec,
     type BorderStyle,
     type Color,
+    type DateFormatOptions,
     type StyleRef,
     type StyleSpec,
 } from './styles.js';

@@ -28,7 +28,7 @@ import {
     type Freeze,
     type RowOptions,
 } from './sheet.js';
-import { StyleTable, type StyleSpec } from './styles.js';
+import { DateFormats, StyleTable, type DateFormatOptions, type StyleSpec } from './styles.js';
 import type { CellRow, Row } from './types.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
 
@@ -46,7 +46,7 @@ const PUSH_BATCH_CHARS = 64 * 1024;
 
 const encoder = new TextEncoder();
 
-export interface XlsxWriterOptions extends SheetOptions {
+export interface XlsxWriterOptions extends SheetOptions, DateFormatOptions {
     /**
      * Name of the first worksheet; defaults to `Sheet1`. Every other sheet is
      * named by the `#worksheet` command that opens it — and so is the first
@@ -87,6 +87,12 @@ export class XlsxWriter {
     private readonly defaults: XlsxWriterOptions;
     /** The workbook's styles, filled in as its cells ask for things. */
     private readonly styles: StyleTable;
+    /**
+     * What a `Date` falls back to. One per workbook, and both places that
+     * have to know what a date looks like read it: the style a date cell
+     * gets, and the width the column it lands in is measured to.
+     */
+    private readonly dates: DateFormats;
     /** The sheets so far, in order; the last of them may still be open. */
     private readonly sheetNames: string[] = [];
     /** The columns of the sheet being written, if it has any. */
@@ -110,7 +116,8 @@ export class XlsxWriter {
 
     constructor(sink: (bytes: Uint8Array) => void, options: XlsxWriterOptions = {}) {
         this.defaults = options;
-        this.styles = new StyleTable(options.styles);
+        this.dates = new DateFormats(options);
+        this.styles = new StyleTable(options.styles, this.dates);
         this.zip = new ZipWriter(sink, options.compressionLevel ?? DEFAULT_COMPRESSION_LEVEL);
         this.discardOnFailure(() => {
             // The parts that depend on nothing, and so can go out before
@@ -190,7 +197,7 @@ export class XlsxWriter {
         };
 
         this.sheetNames.push(name);
-        this.widths = new WidthMeter(autoWidthMax);
+        this.widths = new WidthMeter(autoWidthMax, this.dates);
         this.pendingHeader = { freeze, columnFormats };
         this.batch = '';
         this.rowNumber = 1;

@@ -75,16 +75,18 @@ describe('cellXml', () => {
         assert.equal(cellXml('', 'B2', 1), '<c r="B2" s="1"/>');
     });
 
-    it('writes numbers as numbers', () => {
-        assert.equal(cellXml(0, 'A1', DEFAULT), '<c r="A1" t="n"><v>0</v></c>');
-        assert.equal(cellXml(-3.5, 'A1', DEFAULT), '<c r="A1" t="n"><v>-3.5</v></c>');
+    it('writes numbers as numbers, with no type to say so', () => {
+        // `n` is what a `<c>` holds without a `t`, and numbers are most of
+        // what a sheet is made of: the attribute is the one worth leaving out.
+        assert.equal(cellXml(0, 'A1', DEFAULT), '<c r="A1"><v>0</v></c>');
+        assert.equal(cellXml(-3.5, 'A1', DEFAULT), '<c r="A1"><v>-3.5</v></c>');
     });
 
     it('falls back to text for a number XML cannot carry', () => {
         // NaN and the infinities have no numeric spelling in a sheet, so they
         // go in as what they read as.
         assert.match(cellXml(NaN, 'A1', DEFAULT), /t="inlineStr"/);
-        assert.match(cellXml(Infinity, 'A1', DEFAULT), /<t xml:space="preserve">Infinity<\/t>/);
+        assert.match(cellXml(Infinity, 'A1', DEFAULT), /<t>Infinity<\/t>/);
     });
 
     it('writes booleans as 1 and 0', () => {
@@ -94,25 +96,37 @@ describe('cellXml', () => {
 
     it('writes a Date as an Excel serial number', () => {
         // 1970-01-01 is day 25569 of Excel's own epoch.
-        assert.equal(cellXml(new Date(1970, 0, 1), 'A1', DEFAULT), '<c r="A1" t="n"><v>25569</v></c>');
+        assert.equal(cellXml(new Date(1970, 0, 1), 'A1', DEFAULT), '<c r="A1"><v>25569</v></c>');
         assert.equal(
             cellXml(new Date(2024, 0, 15, 12, 0), 'A1', DEFAULT),
-            '<c r="A1" t="n"><v>45306.5</v></c>',
+            '<c r="A1"><v>45306.5</v></c>',
         );
     });
 
-    it('writes strings inline, escaped, with the spaces preserved', () => {
+    it('writes strings inline, escaped', () => {
         assert.equal(
-            cellXml(' a & b ', 'A1', DEFAULT),
-            '<c r="A1" t="inlineStr"><is><t xml:space="preserve"> a &amp; b </t></is></c>',
+            cellXml('a & b', 'A1', DEFAULT),
+            '<c r="A1" t="inlineStr"><is><t>a &amp; b</t></is></c>',
         );
+    });
+
+    it('asks for the spaces to be kept only when there are any to lose', () => {
+        // Excel trims the edges of a `<t>` that does not say otherwise, and
+        // nothing else about the text is at stake — so the attribute is
+        // written where it changes what comes back, and nowhere else.
+        for (const text of [' 007', '007 ', '\ta', 'b\n']) {
+            assert.match(cellXml(text, 'A1', DEFAULT), /<t xml:space="preserve">/, text);
+        }
+        for (const text of ['007', 'a b', 'Ana & Co']) {
+            assert.doesNotMatch(cellXml(text, 'A1', DEFAULT), /xml:space/, text);
+        }
     });
 
     it('carries the style index on every kind of cell', () => {
-        assert.match(cellXml(1, 'A1', 1), /^<c r="A1" t="n" s="1">/);
+        assert.match(cellXml(1, 'A1', 1), /^<c r="A1" s="1">/);
         assert.match(cellXml(true, 'A1', STYLED), /^<c r="A1" t="b" s="2">/);
         assert.match(cellXml('x', 'A1', 3), /^<c r="A1" t="inlineStr" s="3">/);
-        assert.match(cellXml(new Date(1970, 0, 1), 'A1', 1), /^<c r="A1" t="n" s="1">/);
+        assert.match(cellXml(new Date(1970, 0, 1), 'A1', 1), /^<c r="A1" s="1">/);
     });
 
     it('leaves the style attribute out for the default style', () => {
@@ -183,18 +197,42 @@ describe('cellXml: a formula', () => {
             '<c r="A1" t="str" s="3"><f>B1</f><v>ok</v></c>',
         );
     });
+
+    it('types a cached result that is text, which a `<v>` is read as a number without', () => {
+        assert.equal(cellXml('ok', 'A1', DEFAULT, 'B1'), '<c r="A1" t="str"><f>B1</f><v>ok</v></c>');
+        assert.equal(cellXml(true, 'A1', DEFAULT, 'B1'), '<c r="A1" t="b"><f>B1</f><v>1</v></c>');
+    });
+
+    it('writes text next to a formula as `str`, never as an inline string', () => {
+        // `inlineStr` puts the value in an `<is>`, and there is no `<is>` next
+        // to an `<f>`: a formula's cached result is the `<v>` and nothing else.
+        assert.equal(
+            cellXml('ok', 'A1', DEFAULT, 'B1', 'inlineStr'),
+            '<c r="A1" t="str"><f>B1</f><v>ok</v></c>',
+        );
+    });
 });
 
 describe('cellXml: the type said outright', () => {
     it('keeps a number that is really a code from being shown as one', () => {
         assert.equal(
             cellXml('007', 'A1', DEFAULT, undefined, 'inlineStr'),
-            '<c r="A1" t="inlineStr"><is><t xml:space="preserve">007</t></is></c>',
+            '<c r="A1" t="inlineStr"><is><t>007</t></is></c>',
+        );
+    });
+
+    it('writes text asked for as `str` as the inline string it means', () => {
+        // `str` is the cached result of a formula, and there is no formula
+        // here: what the caller asked for is text, and text in a cell of its
+        // own is an inline string.
+        assert.equal(
+            cellXml('007', 'A1', DEFAULT, undefined, 'str'),
+            cellXml('007', 'A1', DEFAULT, undefined, 'inlineStr'),
         );
     });
 
     it('writes a string as the number the caller says it is', () => {
-        assert.equal(cellXml('1.5', 'A1', DEFAULT, undefined, 'n'), '<c r="A1" t="n"><v>1.5</v></c>');
+        assert.equal(cellXml('1.5', 'A1', DEFAULT, undefined, 'n'), '<c r="A1"><v>1.5</v></c>');
     });
 
     it('writes an error as the code a sheet shows', () => {

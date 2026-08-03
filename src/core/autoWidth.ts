@@ -2,8 +2,7 @@
 // and nothing here knows about zip entries: it counts characters as the cells
 // go by and hands back one width per column, which is all `autoWidthMax` ever
 // was.
-import { hasTimeOfDay } from './cell.js';
-import { DATE_FORMAT, DATETIME_FORMAT } from './styles.js';
+import { DEFAULT_DATE_FORMATS, type DateFormats } from './styles.js';
 import type { CellValue } from './types.js';
 
 /**
@@ -12,18 +11,53 @@ import type { CellValue } from './types.js';
  * A string is its own length and a number is the length of the digits it is
  * written as — not of the number format that may be shown over it, which is
  * the one thing this cannot know: a format is a style, and a style is a name
- * the workbook resolves at the end. A date is measured by the format it gets
- * (`yyyy-mm-dd`, or with the time of day when it says one), which is exactly
- * what the cell will show. A boolean is `TRUE` or `FALSE`, as Excel spells it.
+ * the workbook resolves at the end. A date is measured by the format it falls
+ * back to, which is the workbook's own — and, when that is one of Excel's
+ * built-in ones, by the widest date a locale writes under it, since the
+ * spelling is the reader's to choose. A boolean is `TRUE` or `FALSE`, as
+ * Excel spells it.
  *
  * An empty cell measures 0: it takes part in no width, so a column of blanks
  * is a column nobody asked to resize.
  */
-export function cellTextLength(value: CellValue): number {
+export function cellTextLength(
+    value: CellValue,
+    dates: DateFormats = DEFAULT_DATE_FORMATS,
+): number {
     if (value === null || value === undefined) return 0;
-    if (value instanceof Date) return (hasTimeOfDay(value) ? DATETIME_FORMAT : DATE_FORMAT).length;
+    if (value instanceof Date) return dates.textLength(value);
     if (typeof value === 'boolean') return value ? 4 : 5;
     return String(value).length;
+}
+
+/**
+ * The widest digit of the normal font, in pixels — Calibri 11 at 96 dpi,
+ * which is the font a workbook has until one of its styles says otherwise —
+ * and the padding a column carries around its text: two pixels of margin on
+ * each side, and one more for the gridline.
+ */
+const MAX_DIGIT_WIDTH = 7;
+const COLUMN_PADDING_PIXELS = 5;
+
+/**
+ * A count of characters as the `width` a `<col>` carries.
+ *
+ * The two are not the same number, which is the whole of this function.
+ * ECMA-376 §18.3.1.13 measures a column in multiples of the widest digit of
+ * the normal font *plus the padding*, and stores it in 1/256ths:
+ *
+ * ```
+ * width = Truncate([{characters} * {digit width} + {5px padding}] / {digit width} * 256) / 256
+ * ```
+ *
+ * which is why Excel writes `8.7109375` for a column it autofitted to eight
+ * characters, and not `8`. Writing the count itself leaves every column short
+ * by that padding — the text ends up clipped, and a number or a date under it
+ * comes out as `##########`, which is the visible half of the same bug.
+ */
+export function columnWidth(characters: number): number {
+    const pixels = characters * MAX_DIGIT_WIDTH + COLUMN_PADDING_PIXELS;
+    return Math.trunc((pixels / MAX_DIGIT_WIDTH) * 256) / 256;
 }
 
 /** Why a max nobody can size a column by was refused. */
@@ -49,30 +83,36 @@ export class WidthMeter {
     /** The longest cell seen per 0-based column; a hole is a column with nothing in it. */
     private readonly widths: number[] = [];
     private readonly max: number;
+    /** What a date is measured as, which is the workbook's own business. */
+    private readonly dates: DateFormats;
     /** Whether this meter was given a maximum at all — a sheet's own answer. */
     readonly measures: boolean;
 
-    constructor(max: number | undefined) {
+    constructor(max: number | undefined, dates: DateFormats = DEFAULT_DATE_FORMATS) {
         if (max !== undefined && !(Number.isFinite(max) && max > 0)) throw badMaxError(max);
         this.measures = max !== undefined;
         this.max = max ?? 0;
+        this.dates = dates;
     }
 
     /** One cell, in the column it was written in. */
     see(column: number, value: CellValue): void {
         if (!this.measures) return;
-        const length = cellTextLength(value);
+        const length = cellTextLength(value, this.dates);
         if (!length) return;
         const width = length > this.max ? this.max : length;
         if (width > (this.widths[column] ?? 0)) this.widths[column] = width;
     }
 
     /**
-     * What every column measured, by 0-based column. A column nobody wrote
-     * anything in is a hole — it keeps whatever `columnFormats` says about it,
-     * and Excel's default width when that says nothing either.
+     * What every column measured, as the `width` a `<col>` is written with —
+     * the characters it counted, plus the padding Excel measures a column by.
+     * A column nobody wrote anything in is a hole: it keeps whatever
+     * `columnFormats` says about it, and Excel's default width when that says
+     * nothing either.
      */
     columnWidths(): readonly number[] {
-        return this.widths;
+        // `map` keeps the holes as holes, which is what the sparse array is for.
+        return this.widths.map(columnWidth);
     }
 }

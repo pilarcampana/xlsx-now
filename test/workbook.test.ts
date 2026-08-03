@@ -4,8 +4,9 @@
 // tests generate rather than against the examples' output.
 import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
+import { columnWidth } from '../src/core/autoWidth.js';
 import { createXlsxStream } from '../src/core/createXlsxStream.js';
-import { DATETIME_FORMAT } from '../src/core/styles.js';
+import { DEFAULT_DATETIME_FORMAT } from '../src/core/styles.js';
 import type { Column, Row } from '../src/core/types.js';
 import { collect } from './helpers/streams.js';
 import { MAX_VERSION, METHOD_DEFLATE, SHEET_PART, ZIP64_VERSION, readZipEntries } from './helpers/zip.js';
@@ -104,7 +105,15 @@ describe('a generated workbook, read back with exceljs', () => {
     });
 
     it('shows the time too, since the value carries one', () => {
-        assert.equal(sheet.getRow(2).getCell(4).numFmt, DATETIME_FORMAT);
+        // What the file carries is an id — the built-in short date and time —
+        // and not a format code: the spelling of a date is the reader's own,
+        // and `exceljs` answers with its own table's entry for that id.
+        const numFmt = sheet.getRow(2).getCell(4).numFmt;
+        assert.match(
+            numFmt,
+            /y.*h/i,
+            `built-in ${DEFAULT_DATETIME_FORMAT} was read back as "${numFmt}"`,
+        );
     });
 
     it('reads a negative number and a false back too', () => {
@@ -282,14 +291,17 @@ describe('a workbook whose columns sized themselves, read back with exceljs', ()
     });
 
     it('gives each column the width of its longest cell, up to the maximum', () => {
+        // The width a column is written with is the characters it measured
+        // plus the padding Excel measures a column by, which is what keeps
+        // the value it was sized for from being clipped.
         // "id" against 1, 2 and 3; "Full name" against "Ana & Co <1>", which
         // is 12 and reaches the maximum exactly.
-        assert.equal(sheet.getColumn(1).width, 2);
-        assert.equal(sheet.getColumn(2).width, 12);
-        // The dates are `yyyy-mm-dd hh:mm:ss`, longer than the maximum.
-        assert.equal(sheet.getColumn(4).width, 12);
+        assert.equal(sheet.getColumn(1).width, columnWidth(2));
+        assert.equal(sheet.getColumn(2).width, columnWidth(12));
+        // The dates are longer than the maximum.
+        assert.equal(sheet.getColumn(4).width, columnWidth(12));
         // TRUE, FALSE, and the header longer than both.
-        assert.equal(sheet.getColumn(5).width, 6);
+        assert.equal(sheet.getColumn(5).width, columnWidth(6));
     });
 
     it('leaves the column that was given a width at the one it was given', () => {
