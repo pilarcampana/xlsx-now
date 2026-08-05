@@ -45,7 +45,7 @@ one class, one behaviour, both environments:
 | export | what it is |
 | --- | --- |
 | `XlsxStream` | a `TransformStream<SheetInput, Uint8Array>`, for `.pipeThrough()` |
-| `createXlsxStream` | a `ReadableStream` that *pulls* the rows, for sources that aren't streams |
+| `createXlsxStream` | a `ReadableStream` that *pulls* the rows — or the `sheets`, one source per worksheet — for sources that aren't streams |
 | `XlsxWriter` | the engine under both: `writeRow(message)`, `finish()`, no streams at all |
 
 `XlsxWriter` knows nothing about streams — every byte goes to a sink as soon
@@ -742,6 +742,39 @@ so memory stays flat even for a data set still being received. In Node,
 `writeXlsxFile(path, options)` from `xlsx-now/node` takes the same options and
 writes the file in one call.
 
+### One source per worksheet: `sheets`
+
+A workbook whose shape is known before its rows are — a report per sheet, a
+query behind each one — has no reason to interleave `#worksheet` commands into
+a single stream. `sheets` takes the worksheets spelled out instead, each with
+rows of its own:
+
+```js
+await writeXlsxFile('reportes.xlsx', {
+    sheets: [
+        { name: 'Ventas', columns: ventasColumns, rows: db.cursor(ventasSql) },
+        { name: 'Costos', columns: costosColumns, rows: db.cursor(costosSql) },
+    ],
+});
+```
+
+`sheets` is itself a `ForAwaitable`, so the list can be an array as above or a
+source that yields one report at a time. Each sheet carries the whole of
+`SheetOptions` — `columns`, `columnFormats`, `autoWidthMax`, `freezeRows`,
+`freezeColumns` — and whatever it leaves out falls back to the writer options,
+exactly as a `#worksheet` command does.
+
+Nothing is buffered and nothing runs early: a sheet's `rows` is read only
+while that sheet is the one being written, so the query behind the second
+report starts when the first one has finished going out. `rows` and `sheets`
+are two ways to say the same thing, so pass one or the other, not both.
+
+The reason it is only here, and not on `XlsxStream`, is that a chunk of a
+`TransformStream` is one value: a pipe chain cannot carry a stream of streams,
+which is what the `#worksheet` command exists to encode. `sheets` is that same
+encoding, written for you — it flattens to the very same messages, at no
+measurable cost.
+
 ### A note on `createFileWritable`
 
 Node has no native web-stream writer to a file, so `xlsx-now/node` bridges
@@ -815,7 +848,7 @@ the bare `fflate` — is mapped by an
 The public surface is `src/core/index.ts`, which exports `XlsxWriter`,
 `XlsxStream` and `createXlsxStream` plus the types callers need (`Column`,
 `Row`, `CellValue`, `SheetInput`, `WorksheetCommand`, `LineCommand`,
-`RowOptions`, `CompressionLevel`) and the `WORKSHEET` and `LINE` keys
+`XlsxSheet`, `RowOptions`, `CompressionLevel`) and the `WORKSHEET` and `LINE` keys
 themselves, with the environment-specific faces under `src/node/index.ts` and
 `src/browser/index.ts`.
 
