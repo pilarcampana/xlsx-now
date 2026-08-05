@@ -1,6 +1,10 @@
 export { XlsxStream, type XlsxStreamOptions } from './xlsxStream.js';
 export { XlsxWriter, type XlsxWriterOptions } from './xlsxWriter.js';
-export { createXlsxStream, type CreateXlsxStreamOptions } from './createXlsxStream.js';
+export {
+    createXlsxStream,
+    type CreateXlsxStreamOptions,
+    type XlsxSheet,
+} from './createXlsxStream.js';
 export {
     LINE,
     WORKSHEET,
