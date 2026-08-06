@@ -22,13 +22,20 @@ import {
 } from './parts.js';
 import {
     cellRowXml,
+    columnStyles,
     sheetHeaderXml,
     SHEET_FOOTER,
     type ColumnFormats,
     type Freeze,
     type RowOptions,
 } from './sheet.js';
-import { DateFormats, StyleTable, type DateFormatOptions, type StyleSpec } from './styles.js';
+import {
+    DateFormats,
+    StyleTable,
+    type DateFormatOptions,
+    type StyleRef,
+    type StyleSpec,
+} from './styles.js';
 import type { CellRow, Row } from './types.js';
 import { defaultTypes, ValueTypes, type TypeMap } from './valueTypes.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
@@ -123,6 +130,12 @@ export class XlsxWriter {
      */
     private widths = new WidthMeter(undefined);
     /**
+     * The style each column of the sheet gives its cells. Held for the rows
+     * to be written against: `<col style>` reaches the cells that are not in
+     * the file, and every cell that is has to carry the style itself.
+     */
+    private columns: readonly (StyleRef | undefined)[] = [];
+    /**
      * What the header of the sheet being written will be made of. Opening a
      * sheet does not write it: `<cols>` carries widths the cells may still be
      * measuring, so the header is put together — and the worksheet part
@@ -192,7 +205,15 @@ export class XlsxWriter {
     }
 
     private writeCellRow(row: CellRow, options?: RowOptions): void {
-        this.batch += cellRowXml(this.rowNumber, row, this.styles, this.types, options, this.widths);
+        this.batch += cellRowXml(
+            this.rowNumber,
+            row,
+            this.styles,
+            this.types,
+            options,
+            this.widths,
+            this.columns,
+        );
         this.rowNumber++;
         // A sheet that is measuring itself has nowhere to push to: its `<cols>`
         // is written from rows that have not arrived yet, so it waits for its
@@ -223,6 +244,7 @@ export class XlsxWriter {
 
         this.sheetNames.push(name);
         this.widths = new WidthMeter(autoWidthMax);
+        this.columns = columnStyles(columnFormats);
         this.pendingHeader = { freeze, columnFormats };
         this.batch = '';
         this.rowNumber = 1;
