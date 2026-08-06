@@ -2,6 +2,7 @@ import type { WidthMeter } from './autoWidth.js';
 import { cellRef, cellXml, columnIndex } from './cell.js';
 import type { StyleRef, StyleTable } from './styles.js';
 import type { Cell, CellRow, StyledCell } from './types.js';
+import type { NativeValue, ValueTypes } from './valueTypes.js';
 
 const SHEET_PROLOG =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -203,19 +204,46 @@ function rowAttributes(options: RowOptions | undefined, styles: StyleTable): str
 }
 
 /**
- * A `Date` is a value, not a cell that says more about itself: it is the one
- * object a cell can be on its own. Anything else has to be recognizable as a
- * cell — an object with none of the fields is a caller who meant something
- * the writer cannot guess, and letting it through as a blank would hide it.
+ * Whether an object is a cell that says more about itself, or a value.
+ *
+ * The order is what this is: an object of a type the workbook knows is a
+ * value, whatever it looks like — a `Date` has no `v` and never meant to. Only
+ * past that does an object get read as a cell, and only past *that* does the
+ * `Object` entry get to claim what is left. Anything still unaccounted for is
+ * a caller who meant something the writer cannot guess, and letting it through
+ * as a blank would hide it.
  */
-export function isStyledCell(cell: Cell): cell is StyledCell {
-    if (typeof cell !== 'object' || cell === null || cell instanceof Date) return false;
+export function isStyledCell(cell: Cell, types: ValueTypes): cell is StyledCell {
+    if (typeof cell !== 'object' || cell === null) return false;
+    if (types.handlerFor(cell) !== undefined) return false;
     const styled = cell as StyledCell;
     if ('v' in styled || 's' in styled || 'f' in styled || 't' in styled || 'col' in styled) {
         return true;
     }
-    const keys = Object.keys(styled);
-    throw new Error(
+    if (types.objectHandler !== undefined) return false;
+    throw unknownCellError(cell);
+}
+
+/**
+ * Why an object was neither a value nor a cell.
+ *
+ * The two cases read differently and are worth saying differently. A plain
+ * object is a cell that was spelled wrong — the fields it should have had are
+ * the thing to name. An instance of a class is a type nobody registered, and
+ * what the caller needs to hear is which class and where to say so.
+ */
+function unknownCellError(cell: object): Error {
+    const prototype: unknown = Object.getPrototypeOf(cell);
+    if (prototype !== Object.prototype && prototype !== null) {
+        const { constructor } = prototype as { constructor?: { name?: string } };
+        const named = constructor?.name ? `"${constructor.name}"` : 'this one';
+        return new Error(
+            `A cell is a value of a type the workbook knows, and ${named} is not one of them: ` +
+                'add it to the writer\'s "types", with withType(defaultTypes, ...).',
+        );
+    }
+    const keys = Object.keys(cell);
+    return new Error(
         'A cell is a value, or an object with "v", "s", "f", "t" or "col": ' +
             (keys.length
                 ? `this one has ${keys.map((key) => `"${key}"`).join(', ')}.`
@@ -240,11 +268,17 @@ export function isStyledCell(cell: Cell): cell is StyledCell {
  * hold: every value goes through it on its way out, in the column it turned
  * out to be written in — which is why this is where the measuring happens and
  * not a pass of its own. Left out, nothing is measured.
+ *
+ * `types` is what a value that is not already a native one becomes. It is
+ * asked once per cell, here, and what it answers is what the three things
+ * downstream are handed — the XML, the style, and the width — so no two of
+ * them can disagree about what the cell holds.
  */
 export function cellRowXml(
     rowNumber: number,
     row: CellRow,
     styles: StyleTable,
+    types: ValueTypes,
     options?: RowOptions,
     widths?: WidthMeter,
 ): string {
@@ -257,9 +291,17 @@ export function cellRowXml(
             next++;
             continue;
         }
-        if (!isStyledCell(cell)) {
-            cells += cellXml(cell, cellRef(next, rowNumber), styles.forValue(cell, undefined));
-            widths?.see(next, cell);
+        if (!isStyledCell(cell, types)) {
+            const value = types.convert(cell);
+            const v = value ? value.v : (cell as NativeValue);
+            cells += cellXml(
+                v,
+                cellRef(next, rowNumber),
+                styles.forValue(value?.numFmt, undefined),
+                undefined,
+                value?.t,
+            );
+            widths?.see(next, v, value?.width);
             next++;
             continue;
         }
@@ -270,17 +312,21 @@ export function cellRowXml(
                     'a line fills its columns left to right, once each.',
             );
         }
+        const value = types.convert(cell.v);
+        const v = value ? value.v : (cell.v as NativeValue);
         cells += cellXml(
-            cell.v,
+            v,
             cellRef(at, rowNumber),
-            styles.forValue(cell.v, cell.s),
+            styles.forValue(value?.numFmt, cell.s),
             cell.f,
-            cell.t,
+            // A `t` written on the cell is the caller asking for that one, so
+            // it goes over whatever the value's type would have said.
+            cell.t ?? value?.t,
         );
         // A formula's cached result is what the column will have to show; a
         // formula with no result in hand shows nothing until it is recalculated
         // and so measures nothing.
-        widths?.see(at, cell.v);
+        widths?.see(at, v, value?.width);
         next = at + 1;
     }
     return `<row r="${rowNumber}"${rowAttributes(options, styles)}>${cells}</row>`;

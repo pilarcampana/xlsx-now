@@ -30,6 +30,7 @@ import {
 } from './sheet.js';
 import { DateFormats, StyleTable, type DateFormatOptions, type StyleSpec } from './styles.js';
 import type { CellRow, Row } from './types.js';
+import { defaultTypes, ValueTypes, type TypeMap } from './valueTypes.js';
 import { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
 
 /**
@@ -67,6 +68,25 @@ export interface XlsxWriterOptions extends SheetOptions, DateFormatOptions {
      * which is faster but leaves the file roughly ten times bigger.
      */
     compressionLevel?: CompressionLevel;
+    /**
+     * Every type this workbook can write a value of, keyed by the class it is
+     * an instance of. Defaults to `defaultTypes`, and **replaces** it whole
+     * rather than adding to it — a map that leaves `Date` out is a workbook
+     * where a date is an error, which is the loud half of being able to say
+     * exactly what a workbook knows.
+     *
+     * `withType` is how one is built from another:
+     *
+     * ```js
+     * const appTypes = withType(defaultTypes, HourRange, {
+     *     convert: (range) => ({ v: range.toString() }),
+     * });
+     * ```
+     *
+     * It is read once, here, so nothing that happens to the map afterwards
+     * changes what this workbook writes.
+     */
+    types?: TypeMap;
 }
 
 /**
@@ -88,11 +108,11 @@ export class XlsxWriter {
     /** The workbook's styles, filled in as its cells ask for things. */
     private readonly styles: StyleTable;
     /**
-     * What a `Date` falls back to. One per workbook, and both places that
-     * have to know what a date looks like read it: the style a date cell
-     * gets, and the width the column it lands in is measured to.
+     * What this workbook can write a value of, indexed for the lookup every
+     * cell that is not already a native value goes through. Built once from
+     * the `types` map, and the only thing that knows a `Date` from a number.
      */
-    private readonly dates: DateFormats;
+    private readonly types: ValueTypes;
     /** The sheets so far, in order; the last of them may still be open. */
     private readonly sheetNames: string[] = [];
     /** The columns of the sheet being written, if it has any. */
@@ -116,8 +136,13 @@ export class XlsxWriter {
 
     constructor(sink: (bytes: Uint8Array) => void, options: XlsxWriterOptions = {}) {
         this.defaults = options;
-        this.dates = new DateFormats(options);
-        this.styles = new StyleTable(options.styles, this.dates);
+        // What a date falls back to is the workbook's, and it is what the
+        // types are handed: one `dateFormat` for every type that is a date in
+        // any sense, not one per class that happens to be one.
+        this.types = new ValueTypes(options.types ?? defaultTypes, {
+            dates: new DateFormats(options),
+        });
+        this.styles = new StyleTable(options.styles);
         this.zip = new ZipWriter(sink, options.compressionLevel ?? DEFAULT_COMPRESSION_LEVEL);
         this.discardOnFailure(() => {
             // The parts that depend on nothing, and so can go out before
@@ -167,7 +192,7 @@ export class XlsxWriter {
     }
 
     private writeCellRow(row: CellRow, options?: RowOptions): void {
-        this.batch += cellRowXml(this.rowNumber, row, this.styles, options, this.widths);
+        this.batch += cellRowXml(this.rowNumber, row, this.styles, this.types, options, this.widths);
         this.rowNumber++;
         // A sheet that is measuring itself has nowhere to push to: its `<cols>`
         // is written from rows that have not arrived yet, so it waits for its
@@ -189,7 +214,7 @@ export class XlsxWriter {
         // A header row with no column in it is nobody's intention, so an
         // empty list reads as the rows mode — which is how a sheet opts out
         // of the columns the workbook declared.
-        const mode = columns?.length ? columnsMode(columns) : undefined;
+        const mode = columns?.length ? columnsMode(columns, this.types) : undefined;
         const freeze = {
             rows: sheet.freezeRows ?? this.defaults.freezeRows ?? mode?.freeze.rows ?? 0,
             columns:
@@ -197,7 +222,7 @@ export class XlsxWriter {
         };
 
         this.sheetNames.push(name);
-        this.widths = new WidthMeter(autoWidthMax, this.dates);
+        this.widths = new WidthMeter(autoWidthMax);
         this.pendingHeader = { freeze, columnFormats };
         this.batch = '';
         this.rowNumber = 1;

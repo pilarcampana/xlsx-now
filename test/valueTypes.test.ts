@@ -1,0 +1,278 @@
+import assert from 'node:assert/strict';
+import { columnWidth, WidthMeter } from '../src/core/autoWidth.js';
+import { cellRowXml } from '../src/core/sheet.js';
+import {
+    DateFormats,
+    DEFAULT_DATETIME_FORMAT,
+    DEFAULT_DATE_FORMAT,
+    StyleTable,
+} from '../src/core/styles.js';
+import type { CellRow } from '../src/core/types.js';
+import {
+    bigintValue,
+    dateValue,
+    defaultTypes,
+    urlValue,
+    ValueTypes,
+    withType,
+    type ConvertedValue,
+    type TypeMap,
+} from '../src/core/valueTypes.js';
+
+/** The context a workbook that said nothing about its dates hands out. */
+const PLAIN = { dates: new DateFormats() };
+
+describe('dateValue', () => {
+    it('writes a Date as an Excel serial number', () => {
+        // 1970-01-01 is day 25569 of Excel's own epoch.
+        assert.equal(dateValue(new Date(1970, 0, 1), PLAIN).v, 25569);
+        assert.equal(dateValue(new Date(2024, 0, 15, 12, 0), PLAIN).v, 45306.5);
+    });
+
+    it('shows a date under the built-in short date, and adds the time only when there is one', () => {
+        assert.equal(dateValue(new Date(2024, 0, 15), PLAIN).numFmt, DEFAULT_DATE_FORMAT);
+        assert.equal(
+            dateValue(new Date(2024, 0, 15, 12, 30), PLAIN).numFmt,
+            DEFAULT_DATETIME_FORMAT,
+        );
+    });
+
+    it('takes the formats the workbook it belongs to uses', () => {
+        const context = { dates: new DateFormats({ dateFormat: 'yyyy-mm-dd' }) };
+        assert.equal(dateValue(new Date(2024, 0, 15), context).numFmt, 'yyyy-mm-dd');
+        assert.equal(
+            dateValue(new Date(2024, 0, 15, 12, 30), context).numFmt,
+            'yyyy-mm-dd hh:mm:ss',
+        );
+    });
+
+    it('measures a built-in date as the widest one a locale writes', () => {
+        // The reader spells the short date, not the file, so what is measured
+        // is the longest it comes to anywhere.
+        assert.equal(dateValue(new Date(2024, 0, 15), PLAIN).width, 'dd/mm/yyyy'.length);
+        assert.equal(
+            dateValue(new Date(2024, 0, 15, 12, 30), PLAIN).width,
+            'dd/mm/yyyy hh:mm:ss'.length,
+        );
+    });
+
+    it('measures a date the workbook spelled out by its own format code', () => {
+        const context = { dates: new DateFormats({ dateFormat: 'dd/mm/yy' }) };
+        assert.equal(dateValue(new Date(2024, 0, 15), context).width, 'dd/mm/yy'.length);
+    });
+});
+
+describe('bigintValue', () => {
+    it('keeps a whole number a cell can hold as a number', () => {
+        assert.deepEqual(bigintValue(0n), { v: 0 });
+        assert.deepEqual(bigintValue(-42n), { v: -42 });
+        assert.deepEqual(bigintValue(BigInt(Number.MAX_SAFE_INTEGER)), {
+            v: Number.MAX_SAFE_INTEGER,
+        });
+    });
+
+    it('writes one a cell cannot hold as text, in both directions', () => {
+        // A cell holds a double: past 2^53 the number that comes back out of
+        // the file is not the one that went in, and the digits are the whole
+        // reason to have written a BigInt in the first place.
+        const past = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
+        assert.deepEqual(bigintValue(past), { v: '9007199254740993', t: 'inlineStr' });
+        assert.deepEqual(bigintValue(-past), { v: '-9007199254740993', t: 'inlineStr' });
+    });
+});
+
+describe('urlValue', () => {
+    it('writes a URL as its text', () => {
+        assert.deepEqual(urlValue(new URL('https://example.com/a?b=1')), {
+            v: 'https://example.com/a?b=1',
+        });
+    });
+});
+
+describe('withType', () => {
+    class Money {
+        constructor(readonly cents: number) {}
+    }
+    const handler = { convert: (m: Money): ConvertedValue => ({ v: m.cents / 100 }) };
+
+    it('adds the type to a map that has everything the one it is based on had', () => {
+        const types = withType(defaultTypes, Money, handler);
+        assert.equal(types.get(Money), handler);
+        assert.equal(types.get(Date), defaultTypes.get(Date));
+    });
+
+    it('never touches what it was based on', () => {
+        const before = defaultTypes.size;
+        withType(defaultTypes, Money, handler);
+        assert.equal(defaultTypes.size, before);
+        assert.equal(defaultTypes.get(Money), undefined);
+    });
+
+    it('composes, so a map can be built one type at a time', () => {
+        class Weight {}
+        const types = withType(withType(defaultTypes, Money, handler), Weight, {
+            convert: () => ({ v: 'heavy' }),
+        });
+        assert.equal(types.get(Money), handler);
+        assert.ok(types.get(Weight));
+    });
+});
+
+describe('ValueTypes: what claims a value', () => {
+    class Money {
+        constructor(readonly cents: number) {}
+    }
+    class Cents extends Money {}
+
+    function typesFor(map: TypeMap): ValueTypes {
+        return new ValueTypes(map, PLAIN);
+    }
+
+    it('leaves a value the writer already writes alone', () => {
+        const types = typesFor(defaultTypes);
+        for (const value of ['x', 1, true, null, undefined]) {
+            assert.equal(types.convert(value), undefined, String(value));
+        }
+    });
+
+    it('finds a registered class', () => {
+        const types = typesFor(
+            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents / 100 }) }),
+        );
+        assert.deepEqual(types.convert(new Money(1250)), { v: 12.5 });
+    });
+
+    it('writes a subclass as whatever its base was registered as', () => {
+        const types = typesFor(
+            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents / 100 }) }),
+        );
+        assert.deepEqual(types.convert(new Cents(300)), { v: 3 });
+    });
+
+    it('finds the same handler however many instances go through it', () => {
+        // The lookup is remembered per prototype, so this is one walk and 99
+        // hits — what it must not do is start answering something else.
+        const types = typesFor(
+            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents }) }),
+        );
+        for (let k = 0; k < 100; k++) {
+            assert.deepEqual(types.convert(new Money(k)), { v: k });
+        }
+    });
+
+    it('finds a bigint by the class it would be written as', () => {
+        assert.deepEqual(typesFor(defaultTypes).convert(7n), { v: 7 });
+    });
+
+    it('claims nothing for an object that has no prototype at all', () => {
+        assert.equal(typesFor(defaultTypes).handlerFor(Object.create(null) as object), undefined);
+    });
+
+    it('knows nothing a map left out', () => {
+        const types = typesFor(new Map());
+        assert.equal(types.convert(new Date()), undefined);
+        assert.equal(types.handlerFor(new Date()), undefined);
+    });
+
+    it('does not reach the Object entry by walking the chain', () => {
+        // `handlerFor` stops before `Object.prototype`: a plain object has to
+        // get past `isStyledCell` before the fallback can claim it.
+        const types = typesFor(withType(defaultTypes, Object, { convert: () => ({ v: 'any' }) }));
+        assert.equal(types.handlerFor({}), undefined);
+        assert.equal(types.handlerFor(new Money(1)), undefined);
+        assert.ok(types.objectHandler);
+    });
+
+    it('converts through the Object entry once nothing else has claimed the value', () => {
+        const types = typesFor(
+            withType(defaultTypes, Object, { convert: (o) => ({ v: JSON.stringify(o) }) }),
+        );
+        assert.deepEqual(types.convert({ a: 1 }), { v: '{"a":1}' });
+        // A registered class still wins over it.
+        assert.equal(types.convert(new Date(1970, 0, 1))?.v, 25569);
+    });
+});
+
+describe('a value of a registered type, in a row', () => {
+    class HourRange {
+        constructor(
+            readonly from: string,
+            readonly to: string,
+        ) {}
+        toString(): string {
+            return `${this.from} a ${this.to}`;
+        }
+    }
+
+    const TYPES = withType(defaultTypes, HourRange, {
+        convert: (range) => ({ v: range.toString() }),
+    });
+
+    function rowXml(row: CellRow, types: TypeMap = TYPES): string {
+        return cellRowXml(1, row, new StyleTable(), new ValueTypes(types, PLAIN));
+    }
+
+    it('is written as what its type made of it', () => {
+        assert.equal(
+            rowXml([new HourRange('8:00', '10:30')]),
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>8:00 a 10:30</t></is></c></row>',
+        );
+    });
+
+    it('is a value and not a cell, so it keeps a style the cell put on it', () => {
+        const styles = new StyleTable({ box: { bold: true } });
+        const xml = cellRowXml(
+            1,
+            [{ v: new HourRange('8:00', '10:30'), s: 'box' }],
+            styles,
+            new ValueTypes(TYPES, PLAIN),
+        );
+        assert.match(xml, /<c r="A1" t="inlineStr" s="1">/);
+        assert.match(xml, /<t>8:00 a 10:30<\/t>/);
+    });
+
+    it('lets a t written on the cell go over the one its type would have said', () => {
+        // A BigInt too big for a cell is text; asking for a number is asking
+        // for the rounded number.
+        const big = BigInt(Number.MAX_SAFE_INTEGER) + 2n;
+        assert.match(rowXml([big]), /t="inlineStr"/);
+        assert.match(rowXml([{ v: big, t: 'n' }]), /^<row r="1"><c r="A1"><v>/);
+    });
+
+    it('refuses a class nobody registered, by name', () => {
+        assert.throws(
+            () => rowXml([new HourRange('8:00', '10:30')], defaultTypes),
+            /"HourRange" is not one of them/,
+        );
+    });
+
+    it('still refuses an object that meant to be a cell and was spelled wrong', () => {
+        assert.throws(() => rowXml([{ value: 1 } as never]), /"v", "s", "f", "t" or "col"/);
+    });
+
+    it('refuses an instance with no class to name without pretending it has one', () => {
+        // A prototype chain that never reaches `Object.prototype` has no
+        // constructor to read a name off; there is still something to say.
+        const instance = Object.create(Object.create(null) as object) as object;
+        assert.throws(() => rowXml([instance as never]), /and this one is not one of them/);
+    });
+
+    it('measures a styled cell by the width its value\'s type gave', () => {
+        const widths = new WidthMeter(50);
+        cellRowXml(
+            1,
+            [{ v: new Date(2024, 0, 15), s: 'box' }],
+            new StyleTable({ box: { bold: true } }),
+            new ValueTypes(TYPES, PLAIN),
+            undefined,
+            widths,
+        );
+        // The serial is five digits; the date it stands for is ten characters.
+        assert.equal(widths.columnWidths()[0], columnWidth('dd/mm/yyyy'.length));
+    });
+
+    it('lets the Object entry take what would have been refused', () => {
+        const types = withType(TYPES, Object, { convert: (o) => ({ v: Object.keys(o).join() }) });
+        assert.match(rowXml([{ nope: 1 } as never], types), /<t>nope<\/t>/);
+    });
+});

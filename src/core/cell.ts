@@ -1,4 +1,5 @@
-import type { CellType, CellValue } from './types.js';
+import type { CellType } from './types.js';
+import type { NativeValue } from './valueTypes.js';
 
 // Days between 1900-01-01 and 1970-01-01 (Excel's epoch quirk on Windows).
 const EXCEL_EPOCH_OFFSET_DAYS = 25569;
@@ -74,14 +75,16 @@ export function hasTimeOfDay(value: Date): boolean {
 }
 
 /**
- * What a value is written as when the cell does not say: a date and a number
- * are numbers, a boolean is a boolean, and everything else — including a
- * number XML has no spelling for, like `NaN` — is text. An empty value never
- * gets here: it is a cell with no `<v>` at all, and `cellXml` has already
- * answered for it.
+ * What a value is written as when the cell does not say: a number is a number,
+ * a boolean is a boolean, and everything else — including a number XML has no
+ * spelling for, like `NaN` — is text. An empty value never gets here: it is a
+ * cell with no `<v>` at all, and `cellXml` has already answered for it.
+ *
+ * Only a value the writer already knew reaches this. Anything else — a date
+ * among them — was turned into one of these by its type's own conversion, and
+ * says its own type there when the answer is not the one below.
  */
-function inferredType(value: CellValue): CellType {
-    if (value instanceof Date) return 'n';
+function inferredType(value: NativeValue): CellType {
     if (typeof value === 'number') return Number.isFinite(value) ? 'n' : 'inlineStr';
     if (typeof value === 'boolean') return 'b';
     return 'inlineStr';
@@ -109,7 +112,7 @@ function keepsSpaces(text: string): boolean {
 }
 
 /** The `<is>` of an inline string: the value itself, in the cell, escaped. */
-function inlineStringXml(value: CellValue): string {
+function inlineStringXml(value: NativeValue): string {
     // Escaping never touches the edges — none of the five entities is a
     // space — so the sanitized text answers for the original.
     const text = sanitizeText(value);
@@ -117,8 +120,7 @@ function inlineStringXml(value: CellValue): string {
 }
 
 /** What goes inside the `<v>`, for every type that has one. */
-function valueText(value: CellValue): string {
-    if (value instanceof Date) return String(excelSerial(value));
+function valueText(value: NativeValue): string {
     if (typeof value === 'boolean') return value ? '1' : '0';
     if (typeof value === 'number') return String(value);
     // A string here is a caller having said the type outright — a number that
@@ -141,7 +143,7 @@ function formulaText(formula: string): string {
  * style, a formula — that an empty cell has to be written down.
  */
 export function cellXml(
-    value: CellValue,
+    value: NativeValue,
     ref: string,
     styleIndex: number,
     formula?: string,

@@ -94,15 +94,6 @@ describe('cellXml', () => {
         assert.equal(cellXml(false, 'A1', DEFAULT), '<c r="A1" t="b"><v>0</v></c>');
     });
 
-    it('writes a Date as an Excel serial number', () => {
-        // 1970-01-01 is day 25569 of Excel's own epoch.
-        assert.equal(cellXml(new Date(1970, 0, 1), 'A1', DEFAULT), '<c r="A1"><v>25569</v></c>');
-        assert.equal(
-            cellXml(new Date(2024, 0, 15, 12, 0), 'A1', DEFAULT),
-            '<c r="A1"><v>45306.5</v></c>',
-        );
-    });
-
     it('writes strings inline, escaped', () => {
         assert.equal(
             cellXml('a & b', 'A1', DEFAULT),
@@ -126,7 +117,6 @@ describe('cellXml', () => {
         assert.match(cellXml(1, 'A1', 1), /^<c r="A1" s="1">/);
         assert.match(cellXml(true, 'A1', STYLED), /^<c r="A1" t="b" s="2">/);
         assert.match(cellXml('x', 'A1', 3), /^<c r="A1" t="inlineStr" s="3">/);
-        assert.match(cellXml(new Date(1970, 0, 1), 'A1', 1), /^<c r="A1" s="1">/);
     });
 
     it('leaves the style attribute out for the default style', () => {

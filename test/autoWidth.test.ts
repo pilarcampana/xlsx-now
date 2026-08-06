@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { WidthMeter, cellTextLength, columnWidth } from '../src/core/autoWidth.js';
-import { DateFormats } from '../src/core/styles.js';
-import type { CellValue } from '../src/core/types.js';
+import type { NativeValue } from '../src/core/valueTypes.js';
 
 /** One column, measured through everything that was written in it. */
-function widthOf(max: number, values: readonly CellValue[]): number | undefined {
+function widthOf(max: number, values: readonly NativeValue[]): number | undefined {
     const meter = new WidthMeter(max);
     for (const value of values) meter.see(0, value);
     return meter.columnWidths()[0];
@@ -20,20 +19,14 @@ describe('cellTextLength', () => {
         assert.equal(cellTextLength(-1234), 5);
     });
 
-    it('measures a built-in date as the widest one a locale writes', () => {
-        // The reader spells the short date, not the file, so what is measured
-        // is the longest it comes to anywhere.
-        assert.equal(cellTextLength(new Date(2024, 0, 15)), 'dd/mm/yyyy'.length);
-        assert.equal(cellTextLength(new Date(2024, 0, 15, 12, 30)), 'dd/mm/yyyy hh:mm:ss'.length);
+    it('takes the width the value\'s own type gave, over the one it is written as', () => {
+        // A date is a five-digit serial in the file and ten characters on the
+        // screen; only the type that made it a serial knows that.
+        assert.equal(cellTextLength(45306, 'dd/mm/yyyy'.length), 10);
     });
 
-    it('measures a date the workbook spelled out by its own format code', () => {
-        const dates = new DateFormats({ dateFormat: 'dd/mm/yy' });
-        assert.equal(cellTextLength(new Date(2024, 0, 15), dates), 'dd/mm/yy'.length);
-        assert.equal(
-            cellTextLength(new Date(2024, 0, 15, 12, 30), dates),
-            'dd/mm/yy hh:mm:ss'.length,
-        );
+    it('measures an empty cell as nothing, whatever width came with it', () => {
+        assert.equal(cellTextLength(null, 10), 0);
     });
 
     it('measures a boolean as Excel spells it', () => {
@@ -103,9 +96,9 @@ describe('WidthMeter', () => {
         assert.equal(new WidthMeter(10).measures, true);
     });
 
-    it('measures a date by the formats the workbook it belongs to uses', () => {
-        const meter = new WidthMeter(50, new DateFormats({ dateFormat: 'dddd d "de" mmmm' }));
-        meter.see(0, new Date(2024, 0, 15));
+    it('measures a value by the width its own type gave', () => {
+        const meter = new WidthMeter(50);
+        meter.see(0, 45306, 'dddd d "de" mmmm'.length);
         assert.equal(meter.columnWidths()[0], columnWidth('dddd d "de" mmmm'.length));
     });
 

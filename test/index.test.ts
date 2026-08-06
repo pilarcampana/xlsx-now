@@ -30,6 +30,14 @@ describe('the public surface', () => {
         assert.equal(core.isLineCommand({ name: 'Ana' }), false);
     });
 
+    it('exports the types a workbook knows, and the way to add one', () => {
+        assert.equal(typeof core.withType, 'function');
+        assert.equal(typeof core.defaultTypes.get(Date)?.convert, 'function');
+        assert.equal(typeof core.dateValue, 'function');
+        assert.equal(typeof core.bigintValue, 'function');
+        assert.equal(typeof core.urlValue, 'function');
+    });
+
     it('exports nothing else', () => {
         assert.deepEqual(Object.keys(core).sort(), [
             'DEFAULT_COMPRESSION_LEVEL',
@@ -43,9 +51,14 @@ describe('the public surface', () => {
             'XlsxWriter',
             'ZipWriter',
             'argb',
+            'bigintValue',
             'createXlsxStream',
+            'dateValue',
+            'defaultTypes',
             'isLineCommand',
             'isWorksheetCommand',
+            'urlValue',
+            'withType',
         ]);
     });
 });

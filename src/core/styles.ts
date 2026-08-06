@@ -405,8 +405,6 @@ function section(name: string, entries: readonly string[]): string {
 export class StyleTable {
     /** The styles the writer options declared, by name. */
     private readonly declared: Readonly<Record<string, StyleSpec>>;
-    /** What a `Date` with no format of its own is shown as. */
-    private readonly dates: DateFormats;
 
     private readonly numFmts = new Table([]);
     private readonly fonts = new Table([DEFAULT_FONT]);
@@ -419,15 +417,11 @@ export class StyleTable {
     /** The two refs that repeat: a name, and a spec object by identity. */
     private readonly byName = new Map<string, number>();
     private readonly bySpec = new WeakMap<StyleSpec, number>();
-    /** `<index>|<format>` -> the same style with a date format added to it. */
-    private readonly dated = new Map<string, number>();
+    /** `<index>|<format>` -> the same style with a number format added to it. */
+    private readonly formatted = new Map<string, number>();
 
-    constructor(
-        declared: Readonly<Record<string, StyleSpec>> = {},
-        dates: DateFormats = DEFAULT_DATE_FORMATS,
-    ) {
+    constructor(declared: Readonly<Record<string, StyleSpec>> = {}) {
         this.declared = declared;
-        this.dates = dates;
     }
 
     private numFmtId(numFmt: string | number | undefined): number {
@@ -529,24 +523,25 @@ export class StyleTable {
     }
 
     /**
-     * The index a cell holding `value` gets. It is `index(ref)`, except for a
-     * `Date`: a date is a number in a sheet, and a number with no format is
-     * shown as the five-digit serial it is. So a date whose style says nothing
-     * about the format gets one — the date alone, or the date and the time,
-     * depending on what the value carries.
+     * The index a cell gets when its value brings a number format of its own.
+     * It is `index(ref)`, plus that format where the style is silent about it.
+     *
+     * A date is what this exists for: a date is a number in a sheet, and a
+     * number with no format is shown as the five-digit serial it is. The
+     * format itself is worked out by the type — `numFmt` is what a conversion
+     * hands back — so nothing here has to know which types those are.
      */
-    forValue(value: unknown, ref: StyleRef | undefined): number {
-        if (!(value instanceof Date)) return this.index(ref);
-        const format = this.dates.for(value);
+    forValue(numFmt: string | number | undefined, ref: StyleRef | undefined): number {
+        if (numFmt === undefined) return this.index(ref);
         const base = this.index(ref);
-        const key = `${base}|${format}`;
-        const known = this.dated.get(key);
+        const key = `${base}|${numFmt}`;
+        const known = this.formatted.get(key);
         if (known !== undefined) return known;
         const spec = ref === undefined ? {} : this.spec(ref);
         // A style that already says how to show the number is left alone:
         // asking for a format is how a caller says it wants that one.
-        const index = spec.numFmt !== undefined ? base : this.register({ ...spec, numFmt: format });
-        this.dated.set(key, index);
+        const index = spec.numFmt !== undefined ? base : this.register({ ...spec, numFmt });
+        this.formatted.set(key, index);
         return index;
     }
 

@@ -8,6 +8,7 @@ import {
 } from '../src/core/sheet.js';
 import { StyleTable } from '../src/core/styles.js';
 import type { CellRow } from '../src/core/types.js';
+import { ValueTypes } from '../src/core/valueTypes.js';
 
 /**
  * A row and the table its styles went into. Every test here starts from an
@@ -15,7 +16,7 @@ import type { CellRow } from '../src/core/types.js';
  * one it is: `bold` is 1 in a table where bold was the first thing asked for.
  */
 function rowXml(rowNumber: number, row: CellRow, options?: RowOptions): string {
-    return cellRowXml(rowNumber, row, new StyleTable(), options);
+    return cellRowXml(rowNumber, row, new StyleTable(), new ValueTypes(), options);
 }
 
 /** Just the `<sheetViews>` of a worksheet header. */

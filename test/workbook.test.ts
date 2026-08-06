@@ -8,6 +8,7 @@ import { columnWidth } from '../src/core/autoWidth.js';
 import { createXlsxStream } from '../src/core/createXlsxStream.js';
 import { DEFAULT_DATETIME_FORMAT } from '../src/core/styles.js';
 import type { Column, Row } from '../src/core/types.js';
+import { defaultTypes, withType } from '../src/core/valueTypes.js';
 import { collect } from './helpers/streams.js';
 import { MAX_VERSION, METHOD_DEFLATE, SHEET_PART, ZIP64_VERSION, readZipEntries } from './helpers/zip.js';
 
@@ -311,5 +312,59 @@ describe('a workbook whose columns sized themselves, read back with exceljs', ()
     it('still holds every row it was handed', () => {
         assert.equal(sheet.rowCount, RECORDS.length + 1);
         assert.equal(sheet.getRow(2).getCell(2).value, 'Ana & Co <1>');
+    });
+});
+
+describe('a workbook that was taught a type of its own, read back with exceljs', () => {
+    class HourRange {
+        constructor(
+            readonly from: string,
+            readonly to: string,
+        ) {}
+        toString(): string {
+            return `${this.from} a ${this.to}`;
+        }
+    }
+
+    const TYPES = withType(defaultTypes, HourRange, {
+        convert: (range) => ({ v: range.toString() }),
+    });
+
+    let sheet: ExcelJS.Worksheet;
+
+    before(async () => {
+        sheet = await open(
+            await collect(
+                createXlsxStream({
+                    columns: [{ name: 'class' }, { name: 'hours' }, { name: 'seats' }],
+                    rows: [
+                        { class: 'Bases de datos', hours: new HourRange('8:00', '10:30'), seats: 60n },
+                        { class: 'Algoritmos', hours: new HourRange('14:00', '16:00'), seats: 45n },
+                    ],
+                    types: TYPES,
+                }),
+            ),
+        );
+    });
+
+    it('writes an instance of the class as what its conversion made of it', () => {
+        assert.equal(sheet.getRow(2).getCell(2).value, '8:00 a 10:30');
+        assert.equal(sheet.getRow(3).getCell(2).value, '14:00 a 16:00');
+    });
+
+    it('still knows the types it was based on', () => {
+        assert.equal(sheet.getRow(2).getCell(3).value, 60);
+    });
+
+    it('refuses the same class when the workbook was never given it', async () => {
+        await assert.rejects(
+            collect(
+                createXlsxStream({
+                    columns: [{ name: 'hours' }],
+                    rows: [{ hours: new HourRange('8:00', '10:30') }],
+                }),
+            ),
+            /"HourRange" is not one of them/,
+        );
     });
 });
