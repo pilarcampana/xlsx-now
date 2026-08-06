@@ -1,7 +1,16 @@
 import type { StyleRef } from './styles.js';
 
-/** Anything a caller can put in a cell. Everything else is rendered as text. */
-export type CellValue = string | number | boolean | Date | null | undefined;
+/**
+ * Anything a caller can put in a cell.
+ *
+ * A string, a number and a boolean go in as they are. Everything else is an
+ * instance of a type the workbook knows how to write — a `Date`, a `URL`, one
+ * of the caller's own classes — and what makes it known is the `types` map;
+ * `object` is as narrow as this can be said, since the classes in that map are
+ * the caller's to choose. An object of a type nobody registered is refused by
+ * name rather than written out as whatever `String()` makes of it.
+ */
+export type CellValue = string | number | bigint | boolean | object | null | undefined;
 
 /**
  * One incoming record: the shape a `columns[].key` is looked up on. A

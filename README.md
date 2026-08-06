@@ -379,6 +379,9 @@ five-digit serial it is. So a `Date` whose cell asks for no format of its own
 gets one. A style that says `numFmt` is left alone — asking for a format is
 how a caller says it wants that one.
 
+A `Date` is an entry of [`types`](#types-the-workbook-knows-types) like any
+other, and the two options below are what its conversion reads.
+
 **There is no preview to write.** A date cell holds two things: the serial
 number, and the id of a format. Nothing in the file says what the day *looks
 like* — that is worked out by whoever opens it, every time. (A formula caches
@@ -430,6 +433,107 @@ out of the file reading `2024-01-15`, and taking `getTime()` for the serial
 would write `2024-01-14 21:00`. So the date's own `getTimezoneOffset()` —
 daylight saving and all — is taken off first, and what gets written is the
 same reading `getFullYear()` and `getHours()` give.
+
+### Types the workbook knows: `types`
+
+A sheet holds four things: a number, a boolean, a string, or nothing. Anything
+else has to become one of them on the way in, and `types` is where a workbook
+is told how.
+
+It is a `Map` from a class to the conversion for it. `defaultTypes` is what a
+workbook uses when it is told nothing, and `withType` builds one map from
+another:
+
+```js
+import { createXlsxStream, defaultTypes, withType } from 'xlsx-now';
+
+class HourRange {
+    constructor(from, to) { this.from = from; this.to = to; }
+    toString() { return `${this.from} a ${this.to}`; }
+}
+
+// Once, wherever the application's own types live:
+export const appTypes = withType(defaultTypes, HourRange, {
+    convert: (range) => ({ v: range.toString() }),
+});
+
+// And from then on, an HourRange is a value like any other:
+createXlsxStream({ columns, rows, types: appTypes });
+```
+
+The point is that nothing at the call site has to remember: an `HourRange`
+that reaches any cell of that workbook, in any sheet and in any column,
+converts itself. What used to be a `map` before the writer is declared once
+and named once.
+
+**A conversion returns a value, not a cell.** Only `v` is required — a string,
+a number or a boolean, which is what the writer already writes. The rest is
+what the value would have lost by becoming one of those:
+
+| field | what it is |
+| --- | --- |
+| `v` | the value itself, as the writer already writes it |
+| `t` | what the cell says it holds; read off `v` when left out |
+| `numFmt` | the number format the cell falls back to |
+| `width` | how many characters it *shows*, for `autoWidthMax` |
+
+`numFmt` applies exactly as a date's does: a style that already says `numFmt`
+has said what it wants and is left alone. A `t` written on the cell wins over
+the one the conversion gave, since asking for a type outright is asking for
+that one.
+
+**What comes in the box:**
+
+| class | written as |
+| --- | --- |
+| `Date` | the serial, under [the workbook's date formats](#dates) |
+| `BigInt` | a number while a cell can hold one exactly, text past that |
+| `URL` | its `href` |
+
+`Date` is one entry among the others and not a case above them, which is the
+whole test of whether this generalizes: a class of your own goes in the same
+way and costs the same. A conversion is handed the workbook's `DateFormats`,
+so a type of yours that is a date in any sense reads the same `dateFormat`
+everything else does — `dateValue` is exported for exactly that:
+
+```js
+withType(defaultTypes, Timestamp, {
+    convert: (own, context) => dateValue(own.toDate(), context),
+});
+```
+
+**A `BigInt` past 2<sup>53</sup> becomes text.** A cell stores a double, so
+15 to 16 digits is all the precision there is: written as a number, a longer
+one comes back out of the file with its last digits replaced by zeros — a
+wrong value that looks like a right one. Text keeps every digit, and a caller
+who would rather have the rounded number says `t: 'n'` on the cell.
+
+**`types` replaces the map, it does not add to it.** That is what makes it one
+option instead of a list, and it means a map that leaves `Date` out is a
+workbook where a date is an error rather than a wrong number. It is read once,
+when the writer is constructed, so nothing that happens to the map afterwards
+changes what that workbook writes — and two workbooks written side by side
+cannot change what the other one knows.
+
+**A class nobody registered is refused by name.** There is no one right way to
+write a `Map`, a `Set`, a nested array or a class the library has never seen,
+so none of them is written out as whatever `String()` makes of it:
+
+```
+A cell is a value of a type the workbook knows, and "HourRange" is not one of
+them: add it to the writer's "types", with withType(defaultTypes, ...).
+```
+
+The lookup walks the prototype chain, so `class Timestamp extends Date` needs
+no entry of its own, and it is keyed on the class itself rather than on its
+name — nothing here depends on a name a minifier is free to rewrite. Every
+prototype is remembered the first time it is seen, so a sheet of a million
+dates costs one lookup and 999,999 hits.
+
+**An object nobody claimed** can be caught with an entry under `Object`, which
+is the class every prototype chain ends at. It is consulted last, after an
+object has been given the chance to be [a cell that says more](#the-cell-that-says-more):
+`{ v: 1, s: 'money' }` is a cell, not a value, and stays one.
 
 ### The columns of a sheet: `columnFormats`
 
@@ -1077,6 +1181,11 @@ columns — fails the freeze check.
   Access API.** Firefox/Safari don't support `showSaveFilePicker`, so on
   those the current fallback still generates incrementally but has to
   materialize a `Blob` before the browser's normal download flow can start.
+- **`Temporal` out of the box.** `Temporal.PlainDate` and the rest are exactly
+  what [`types`](#types-the-workbook-knows-types) is for, and adding them is a
+  `withType` away — but they are not in `defaultTypes`, because this
+  repository's Node and its `lib` setting have neither the runtime nor the
+  types to write them against and test them.
 - **Shared formulas and array formulas.** A cell's `f` is its own; the
   `shared`/`array` forms, where one expression covers a range, are not
   emitted. Nothing about them is ruled out by the design.

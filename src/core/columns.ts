@@ -5,6 +5,7 @@
 import { isStyledCell, type Freeze } from './sheet.js';
 import type { StyleSpec } from './styles.js';
 import type { CellRow, Column, Row } from './types.js';
+import type { ValueTypes } from './valueTypes.js';
 
 /**
  * What the columns mode looks like. These are held as constants rather than
@@ -40,7 +41,7 @@ export interface ColumnsMode {
     toCellRow(record: Row): CellRow;
 }
 
-export function columnsMode(columns: readonly Column[]): ColumnsMode {
+export function columnsMode(columns: readonly Column[], types: ValueTypes): ColumnsMode {
     return {
         freeze: { rows: 1, columns: frozenColumnCount(columns) },
         headerRow: columns.map((column) => ({
@@ -53,7 +54,9 @@ export function columnsMode(columns: readonly Column[]): ColumnsMode {
                 if (!column.pk) return value;
                 // The pk fill is what the column asks for; a cell that says
                 // how it looks has said it for itself.
-                return isStyledCell(value) ? { ...value, s: value.s ?? PK } : { v: value, s: PK };
+                return isStyledCell(value, types)
+                    ? { ...value, s: value.s ?? PK }
+                    : { v: value, s: PK };
             }),
     };
 }

@@ -31,6 +31,19 @@ export {
     type StyleSpec,
 } from './styles.js';
 export { DEFAULT_COMPRESSION_LEVEL, ZipWriter, type CompressionLevel } from './zip.js';
+export {
+    bigintValue,
+    dateValue,
+    defaultTypes,
+    urlValue,
+    withType,
+    type ConvertContext,
+    type ConvertedValue,
+    type NativeValue,
+    type TypeHandler,
+    type TypeKey,
+    type TypeMap,
+} from './valueTypes.js';
 export type {
     Cell,
     CellRow,

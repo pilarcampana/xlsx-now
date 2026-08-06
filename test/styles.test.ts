@@ -285,18 +285,15 @@ describe('StyleTable: what one style renders as', () => {
     });
 });
 
-describe('StyleTable: what a date is shown as', () => {
-    const day = new Date(2024, 0, 15);
-    const moment = new Date(2024, 0, 15, 12, 30);
-
+describe('StyleTable: the number format a value brought with it', () => {
     function table(): StyleTable {
         return new StyleTable({ money: { numFmt: '#,##0.00' }, big: { size: 20 } });
     }
 
-    it('leaves anything that is not a date to the style it was given', () => {
+    it('leaves a value that brought no format to the style it was given', () => {
         const styles = table();
-        assert.equal(styles.forValue(1, undefined), 0);
-        assert.equal(styles.forValue('x', 'money'), styles.index('money'));
+        assert.equal(styles.forValue(undefined, undefined), 0);
+        assert.equal(styles.forValue(undefined, 'money'), styles.index('money'));
     });
 
     /** The number format an entry of `<cellXfs>` asks for. */
@@ -305,26 +302,26 @@ describe('StyleTable: what a date is shown as', () => {
         return /numFmtId="(\d+)"/.exec(entry)?.[1] ?? '';
     }
 
-    it('formats a date that asked for nothing, so it is not shown as a serial', () => {
+    it('adds the format to a style that asked for nothing, so a date is not shown as a serial', () => {
         const styles = table();
-        const dated = styles.forValue(day, undefined);
+        const dated = styles.forValue(DEFAULT_DATE_FORMAT, undefined);
         assert.notEqual(dated, 0);
         // The built-in short date, which the reader spells in its own locale
         // — an id, so there is no format code to write out for it.
         assert.equal(numFmtIdOf(styles, dated), String(DEFAULT_DATE_FORMAT));
     });
 
-    it('adds the time only when the date carries one', () => {
+    it('gives two formats two entries', () => {
         const styles = table();
-        const dated = styles.forValue(moment, undefined);
-        assert.notEqual(dated, styles.forValue(day, undefined));
+        const dated = styles.forValue(DEFAULT_DATETIME_FORMAT, undefined);
+        assert.notEqual(dated, styles.forValue(DEFAULT_DATE_FORMAT, undefined));
         assert.equal(numFmtIdOf(styles, dated), String(DEFAULT_DATETIME_FORMAT));
     });
 
-    it('takes the formats the workbook gave it, and adds the time to the date one', () => {
-        const styles = new StyleTable({}, new DateFormats({ dateFormat: 'yyyy-mm-dd' }));
-        styles.forValue(day, undefined);
-        styles.forValue(moment, undefined);
+    it('writes out a format code, which a built-in id has none of', () => {
+        const styles = new StyleTable();
+        styles.forValue('yyyy-mm-dd', undefined);
+        styles.forValue('yyyy-mm-dd hh:mm:ss', undefined);
         const xml = styles.xml();
         assert.ok(xml.includes('formatCode="yyyy-mm-dd"'), xml);
         assert.ok(xml.includes('formatCode="yyyy-mm-dd hh:mm:ss"'), xml);
@@ -333,7 +330,7 @@ describe('StyleTable: what a date is shown as', () => {
     it('keeps the rest of the style it was given, and only adds the format', () => {
         const styles = table();
         const plain = styles.index('big');
-        const dated = styles.forValue(day, 'big');
+        const dated = styles.forValue(DEFAULT_DATE_FORMAT, 'big');
         assert.notEqual(dated, plain);
         assert.deepEqual(styles.spec('big'), { size: 20 }); // the style itself is untouched
         const entries = cellXfs(styles.xml());
@@ -345,12 +342,12 @@ describe('StyleTable: what a date is shown as', () => {
     it('leaves a style that already says how to show its number alone', () => {
         // Asking for a format is how a caller says it wants that one.
         const styles = table();
-        assert.equal(styles.forValue(day, 'money'), styles.index('money'));
+        assert.equal(styles.forValue(DEFAULT_DATE_FORMAT, 'money'), styles.index('money'));
     });
 
-    it('asks for the date style once, however many dates go through it', () => {
+    it('asks for the style once, however many values bring the same format', () => {
         const styles = new StyleTable();
-        for (let k = 0; k < 100; k++) styles.forValue(new Date(2024, 0, 1 + k), undefined);
+        for (let k = 0; k < 100; k++) styles.forValue(DEFAULT_DATE_FORMAT, undefined);
         assert.equal(cellXfs(styles.xml()).length, 2); // the default, and the date
     });
 });
