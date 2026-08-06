@@ -12,6 +12,7 @@ import {
     bigintValue,
     dateValue,
     defaultTypes,
+    shownWidth,
     urlValue,
     ValueTypes,
     withType,
@@ -86,6 +87,28 @@ describe('urlValue', () => {
         assert.deepEqual(urlValue(new URL('https://example.com/a?b=1')), {
             v: 'https://example.com/a?b=1',
         });
+    });
+});
+
+describe('shownWidth', () => {
+    it('says nothing about a value that needed no conversion', () => {
+        assert.equal(shownWidth(undefined), undefined);
+    });
+
+    it('takes the width the conversion gave, over anything it could work out', () => {
+        assert.equal(shownWidth({ v: 1, numFmt: 'yyyy-mm-dd hh:mm:ss', width: 3 }), 3);
+    });
+
+    it('works the width out of a format code, which is a template of the output', () => {
+        assert.equal(shownWidth({ v: 1, numFmt: '[h]:mm:ss' }), '[h]:mm:ss'.length);
+    });
+
+    it('has nothing to work out from a built-in format, which is an id', () => {
+        assert.equal(shownWidth({ v: 1, numFmt: DEFAULT_DATE_FORMAT }), undefined);
+    });
+
+    it('has nothing to work out from a value that brought no format', () => {
+        assert.equal(shownWidth({ v: 'x' }), undefined);
     });
 });
 
@@ -269,6 +292,28 @@ describe('a value of a registered type, in a row', () => {
         );
         // The serial is five digits; the date it stands for is ten characters.
         assert.equal(widths.columnWidths()[0], columnWidth('dd/mm/yyyy'.length));
+    });
+
+    it('sizes a column by the format a conversion asked for, not by the number under it', () => {
+        // A duration as a fraction of a day: half an hour is
+        // `0.020833333333333332`, twenty characters of a number nobody sees,
+        // against the `0:30:00` the cell shows.
+        class Interval {
+            constructor(readonly ms: number) {}
+        }
+        const types = withType(defaultTypes, Interval, {
+            convert: (interval) => ({ v: interval.ms / 86400000, numFmt: '[h]:mm:ss' }),
+        });
+        const widths = new WidthMeter(50);
+        cellRowXml(
+            1,
+            [new Interval(30 * 60 * 1000)],
+            new StyleTable(),
+            new ValueTypes(types, PLAIN),
+            undefined,
+            widths,
+        );
+        assert.equal(widths.columnWidths()[0], columnWidth('[h]:mm:ss'.length));
     });
 
     it('lets the Object entry take what would have been refused', () => {

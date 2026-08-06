@@ -482,6 +482,28 @@ has said what it wants and is left alone. A `t` written on the cell wins over
 the one the conversion gave, since asking for a type outright is asking for
 that one.
 
+**`width` is worked out from the format when it is left out.** A conversion
+that gives a `numFmt` has already said that `v` is not what the cell shows, so
+measuring `v` there is not measuring imprecisely — it is measuring the wrong
+thing. A duration written as a fraction of a day is the clearest case:
+
+```js
+withType(defaultTypes, Interval, {
+    convert: (interval) => ({ v: interval.ms / 86400000, numFmt: '[h]:mm:ss' }),
+});
+```
+
+Half an hour is `0.020833333333333332` in the file — twenty characters of a
+number nobody will ever see — against the seven of the `0:30:00` the cell
+shows. So a format code, which is a template of what comes out, is measured by
+its own length: nine here, close enough to size a column by, and exactly right
+for a `'yyyy-mm-dd'`.
+
+It is an estimate and not a measurement. A format whose output grows with the
+value — `'#,##0.00'` against a million — comes out short, and a built-in
+format is an id with no code to measure at all. Both are what `width` is for:
+a conversion that knows its own magnitude says so, as `dateValue` does.
+
 **What comes in the box:**
 
 | class | written as |
