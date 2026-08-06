@@ -10,7 +10,7 @@ import { DEFAULT_DATETIME_FORMAT } from '../src/core/styles.js';
 import type { Column, Row } from '../src/core/types.js';
 import { defaultTypes, withType } from '../src/core/valueTypes.js';
 import { collect } from './helpers/streams.js';
-import { MAX_VERSION, METHOD_DEFLATE, SHEET_PART, ZIP64_VERSION, readZipEntries } from './helpers/zip.js';
+import { MAX_VERSION, METHOD_DEFLATE, SHEET_PART, ZIP64_VERSION, readXlsx, readZipEntries } from './helpers/zip.js';
 
 const PK_FILL_ARGB = 'FFFFE699';
 
@@ -366,5 +366,71 @@ describe('a workbook that was taught a type of its own, read back with exceljs',
             ),
             /"HourRange" is not one of them/,
         );
+    });
+});
+
+describe('a row style and a column style, read back with exceljs', () => {
+    // The shape of a file made by hand in Excel: column A bold, row 1 bold,
+    // one cell bold on its own. Excel writes the style on every cell it
+    // reaches — a `<c>` with no `s` is style 0, not a cell waiting to inherit
+    // one — and keeps the `<row>` and `<col>` for the cells that are not in
+    // the file at all.
+    let sheet: ExcelJS.Worksheet;
+    let xml: string;
+
+    before(async () => {
+        const bytes = await collect(
+            createXlsxStream({
+                columnFormats: [{ s: { bold: true } }],
+                rows: [
+                    {
+                        '#line': 'array',
+                        values: ['both', 'by line', 'by line 2'],
+                        s: { bold: true },
+                    },
+                    ['by column', 'normal', 'normal 2'],
+                    ['by column 2', 'normal 3', { v: 'in cell', s: { bold: true } }],
+                    [{ v: 'both, merged', s: { italic: true } }],
+                ],
+            } as Parameters<typeof createXlsxStream>[0]),
+        );
+        xml = (await readXlsx(bytes)).sheet;
+        sheet = await open(bytes as Buffer);
+    });
+
+    /** Which cells of the first three rows and columns came back bold. */
+    function bold(): string[] {
+        return [1, 2, 3].map((row) =>
+            [1, 2, 3].map((col) => (sheet.getRow(row).getCell(col).font?.bold ? 'B' : '.')).join(''),
+        );
+    }
+
+    it('reaches every cell the row, the column and the cell itself ask for', () => {
+        assert.deepEqual(bold(), ['BBB', 'B..', 'B.B']);
+    });
+
+    it('writes the style on the cells, which is the only place it is read from', () => {
+        assert.match(xml, /<c r="A1"[^>]* s="1"/);
+        assert.match(xml, /<c r="C3"[^>]* s="1"/);
+    });
+
+    it('merges what the column says with what the cell says, rather than one winning', () => {
+        // A4 falls under the bold column and asks for italic on its own: a
+        // cell that says one thing does not give up what it was already under.
+        const cell = sheet.getRow(4).getCell(1);
+        assert.ok(cell.font?.bold, 'lost the bold the column gave it');
+        assert.ok(cell.font?.italic, 'lost the italic it asked for');
+    });
+
+    it('leaves a cell that falls under nothing with no style attribute at all', () => {
+        // Not `s="0"`: the default is what a `<c>` says by saying nothing.
+        assert.match(xml, /<c r="B2" t="inlineStr">/);
+    });
+
+    it('still says it on the row and the column, for the cells not in the file', () => {
+        // This is what makes a value typed into an empty cell of that row —
+        // or that column — come out styled, as it does in Excel.
+        assert.match(xml, /<row r="1" s="\d+" customFormat="1">/);
+        assert.match(xml, /<col min="1" max="1" style="\d+"\/>/);
     });
 });

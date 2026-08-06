@@ -352,6 +352,79 @@ describe('StyleTable: the number format a value brought with it', () => {
     });
 });
 
+describe('StyleTable: the styles a cell falls under, stacked', () => {
+    const COLUMN: StyleSpec = { bg: '#eee' };
+    const ROW: StyleSpec = { bold: true };
+    const OWN: StyleSpec = { italic: true };
+
+    it('hands back the one style there is, untouched, when there is only one', () => {
+        const styles = new StyleTable();
+        assert.equal(styles.stack(COLUMN, undefined, undefined), COLUMN);
+        assert.equal(styles.stack(undefined, ROW, undefined), ROW);
+        assert.equal(styles.stack(undefined, undefined, OWN), OWN);
+        assert.equal(styles.stack(undefined, undefined, undefined), undefined);
+    });
+
+    it('merges them, each one over the one before it', () => {
+        const styles = new StyleTable();
+        assert.deepEqual(styles.stack(COLUMN, ROW, OWN), {
+            bg: '#eee',
+            bold: true,
+            italic: true,
+        });
+    });
+
+    it('lets the nearer style win where two of them say the same thing', () => {
+        const styles = new StyleTable();
+        // The column says bold, the row says not: the row is nearer the cell.
+        assert.deepEqual(styles.stack({ bold: true }, { bold: false }, undefined), {
+            bold: false,
+        });
+        // And the cell is nearer than either.
+        assert.deepEqual(styles.stack({ bold: true }, { bold: false }, { bold: true }), {
+            bold: true,
+        });
+    });
+
+    it('merges the two there are when the one in the middle is missing', () => {
+        const styles = new StyleTable();
+        assert.deepEqual(styles.stack(COLUMN, undefined, OWN), { bg: '#eee', italic: true });
+    });
+
+    it('resolves a declared style by name before merging it', () => {
+        const styles = new StyleTable({ head: { bold: true }, big: { base: 'head', size: 20 } });
+        assert.deepEqual(styles.stack(undefined, 'big', { italic: true }), {
+            bold: true,
+            size: 20,
+            italic: true,
+        });
+    });
+
+    it('gives one stack one entry, however many cells fall under it', () => {
+        const styles = new StyleTable();
+        const first = styles.stack(COLUMN, ROW, OWN);
+        assert.equal(styles.stack(COLUMN, ROW, OWN), first); // the same object
+        for (let k = 0; k < 100; k++) styles.index(styles.stack(COLUMN, ROW, OWN));
+        // The default, the stack, and nothing else: the parts were never
+        // registered on their own.
+        assert.equal(cellXfs(styles.xml()).length, 2);
+    });
+
+    it('tells two stacks apart when their parts render the same but say different things', () => {
+        // `{ underline: false }` and a style that never mentions underlining
+        // are the same font, so they are the same `<cellXfs>` entry — but
+        // over a row that underlines they are not the same cell at all.
+        const styles = new StyleTable();
+        const row: StyleSpec = { underline: true };
+        const plain = styles.index(styles.stack(undefined, row, { bold: true }));
+        const off = styles.index(styles.stack(undefined, row, { bold: true, underline: false }));
+        assert.notEqual(plain, off);
+        assert.match(cellXfs(styles.xml())[plain] ?? '', /fontId="1"/);
+        const fonts = /<fonts.*?<\/fonts>/s.exec(styles.xml())?.[0] ?? '';
+        assert.equal((fonts.match(/<u\/>/g) ?? []).length, 1);
+    });
+});
+
 describe('DateFormats', () => {
     const day = new Date(2024, 0, 15);
     const moment = new Date(2024, 0, 15, 12, 30);

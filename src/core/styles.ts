@@ -419,6 +419,11 @@ export class StyleTable {
     private readonly bySpec = new WeakMap<StyleSpec, number>();
     /** `<index>|<format>` -> the same style with a number format added to it. */
     private readonly formatted = new Map<string, number>();
+    /** The three refs a cell falls under -> the one style they come to. */
+    private readonly stacked = new Map<string, StyleSpec>();
+    /** A number standing for a spec object, so a stack of them has a key. */
+    private readonly specIds = new WeakMap<StyleSpec, number>();
+    private nextSpecId = 0;
 
     constructor(declared: Readonly<Record<string, StyleSpec>> = {}) {
         this.declared = declared;
@@ -520,6 +525,67 @@ export class StyleTable {
         const index = this.register(this.resolve(ref, []));
         this.bySpec.set(ref, index);
         return index;
+    }
+
+    /**
+     * What a ref is called inside the key of a stack. A name is itself; an
+     * object is a number minted for it, because two spec objects that say
+     * different things can still render to the same `<cellXfs>` entry — an
+     * `underline: false` and a style that never mentions underlining are the
+     * same font — and it is what they *say* that decides a merge, not what
+     * they come to alone.
+     */
+    private refKey(ref: StyleRef | undefined): string {
+        if (ref === undefined) return '';
+        if (typeof ref === 'string') return `n${ref}`;
+        let id = this.specIds.get(ref);
+        if (id === undefined) {
+            id = ++this.nextSpecId;
+            this.specIds.set(ref, id);
+        }
+        return `o${id}`;
+    }
+
+    /**
+     * The one style a cell falls under, out of the ones stacked over it: the
+     * column's, then the row's, then the cell's own, each going over the one
+     * before it.
+     *
+     * There is no such thing as a cell inheriting a style in xlsx — a `<c>`
+     * with no `s` is style 0, which is an answer and not a silence — so the
+     * stack has to be worked out here and written on the cell itself. It is
+     * what Excel's own files do: a cell in a bold row carries the bold, and
+     * the `<row>` and `<col>` keep saying it for the cells that are not in the
+     * file at all.
+     *
+     * Merging is shallow, exactly as `base` already merges: a style that says
+     * `border` says the whole border. A cell that falls under nothing but its
+     * own style — which is nearly every cell — comes back with it untouched
+     * and nothing is merged or remembered.
+     */
+    stack(
+        column: StyleRef | undefined,
+        row: StyleRef | undefined,
+        own: StyleRef | undefined,
+    ): StyleRef | undefined {
+        if (column === undefined && row === undefined) return own;
+        if (column === undefined && own === undefined) return row;
+        if (row === undefined && own === undefined) return column;
+        // A separator no style name carries, so two different stacks cannot
+        // run together into the same key.
+        const key = [this.refKey(column), this.refKey(row), this.refKey(own)].join('\u0000');
+        const known = this.stacked.get(key);
+        if (known !== undefined) return known;
+        const merged: StyleSpec = {
+            ...(column === undefined ? undefined : this.spec(column)),
+            ...(row === undefined ? undefined : this.spec(row)),
+            ...(own === undefined ? undefined : this.spec(own)),
+        };
+        // Kept so its identity holds: the index of a spec object is
+        // remembered by identity, so one stack is registered once however
+        // many cells fall under it.
+        this.stacked.set(key, merged);
+        return merged;
     }
 
     /**

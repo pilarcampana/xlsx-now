@@ -357,13 +357,36 @@ const xlsxStream = createXlsxStream({
 
 A name nobody declared is an error, not a cell that quietly comes out plain.
 
-**Where a style can go.** Three levels, and Excel resolves them in this order:
+**Where a style can go.** Three levels, each one over the one before it:
 
 | level | how |
 | --- | --- |
-| the cell | `{ v, s }` |
-| the row | `{ '#line': 'array', values: [...], s }` |
 | the column | `columnFormats` |
+| the row | `{ '#line': 'array', values: [...], s }` |
+| the cell | `{ v, s }` |
+
+They **merge**, field by field, the same way `base` does — a bold row with one
+italic cell in it gives that cell both. Where two of them say the same thing,
+the nearer one to the cell wins.
+
+**There is no inheritance in xlsx to lean on**, which is what makes this the
+writer's job rather than the reader's. A `<c>` with no `s` is style 0, and
+style 0 is an answer, not a silence: a cell that says nothing is *plain*, not a
+cell waiting to be told. So the three levels are resolved per cell and written
+on the `<c>` itself:
+
+```xml
+<cols><col min="1" max="1" style="1"/></cols>
+<row r="1" s="1" customFormat="1"><c r="A1" t="inlineStr" s="1">…
+<row r="2"><c r="A2" t="inlineStr" s="1">…<c r="B2" t="inlineStr">…
+```
+
+That is what Excel's own files look like, byte for byte in shape: the style on
+every cell it reaches, no `s="0"` on the cells that fall under nothing, and
+the `<row>` and `<col>` still saying it — because *those* are what reach the
+cells that are **not in the file at all**. Type a value into an empty cell of
+a bold row in Excel and it comes out bold; that is the `<row>` doing it, and
+it is why both are written.
 
 **Nothing has to be known upfront.** The table is built as the rows go by and
 `xl/styles.xml` is written at the end, next to `xl/workbook.xml` and for the

@@ -135,6 +135,22 @@ function columnLayout(
 }
 
 /**
+ * The style each column gives the cells written in it, by 0-based column. A
+ * hole is a column that gives them none.
+ *
+ * The `<col style>` this comes from is not what makes a cell look like it:
+ * that reaches the cells that are *not* in the file, and every cell that is
+ * has to carry the style itself. So the layout is read a second time, here,
+ * for the rows to be written against — see `StyleTable.stack`.
+ */
+export function columnStyles(
+    formats: ColumnFormats | undefined,
+): readonly (StyleRef | undefined)[] {
+    // `map` keeps the holes as holes, which is what the sparse array is for.
+    return columnLayout(formats, undefined).map((format) => format.s);
+}
+
+/**
  * The `<cols>` of a worksheet, which is where a column's width, its style and
  * whether it is shown at all are kept — one `<col>` per column, spanning the
  * one it is for and no more. `customWidth` is what makes Excel apply the
@@ -273,6 +289,11 @@ function unknownCellError(cell: object): Error {
  * asked once per cell, here, and what it answers is what the three things
  * downstream are handed — the XML, the style, and the width — so no two of
  * them can disagree about what the cell holds.
+ *
+ * `columns` is the style each column gives its cells. A cell falls under it,
+ * then under the row's own `s`, then under whatever it says for itself, and
+ * what gets written on the `<c>` is the three of them stacked: xlsx has no
+ * inheritance to lean on, so the cell carries the answer.
  */
 export function cellRowXml(
     rowNumber: number,
@@ -281,9 +302,11 @@ export function cellRowXml(
     types: ValueTypes,
     options?: RowOptions,
     widths?: WidthMeter,
+    columns?: readonly (StyleRef | undefined)[],
 ): string {
     let cells = '';
     let next = 0;
+    const rowStyle = options?.s;
     for (const cell of row) {
         // A hole still takes up its column: the array is the sheet's layout
         // as much as it is the values.
@@ -297,7 +320,7 @@ export function cellRowXml(
             cells += cellXml(
                 v,
                 cellRef(next, rowNumber),
-                styles.forValue(value?.numFmt, undefined),
+                styles.forValue(value?.numFmt, styles.stack(columns?.[next], rowStyle, undefined)),
                 undefined,
                 value?.t,
             );
@@ -317,7 +340,7 @@ export function cellRowXml(
         cells += cellXml(
             v,
             cellRef(at, rowNumber),
-            styles.forValue(value?.numFmt, cell.s),
+            styles.forValue(value?.numFmt, styles.stack(columns?.[at], rowStyle, cell.s)),
             cell.f,
             // A `t` written on the cell is the caller asking for that one, so
             // it goes over whatever the value's type would have said.
