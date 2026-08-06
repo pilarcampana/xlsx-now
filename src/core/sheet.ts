@@ -2,7 +2,7 @@ import type { WidthMeter } from './autoWidth.js';
 import { cellRef, cellXml, columnIndex } from './cell.js';
 import type { StyleRef, StyleTable } from './styles.js';
 import type { Cell, CellRow, StyledCell } from './types.js';
-import type { NativeValue, ValueTypes } from './valueTypes.js';
+import { shownWidth, type NativeValue, type ValueTypes } from './valueTypes.js';
 
 const SHEET_PROLOG =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -301,7 +301,7 @@ export function cellRowXml(
                 undefined,
                 value?.t,
             );
-            widths?.see(next, v, value?.width);
+            widths?.see(next, v, shownWidth(value));
             next++;
             continue;
         }
@@ -326,7 +326,7 @@ export function cellRowXml(
         // A formula's cached result is what the column will have to show; a
         // formula with no result in hand shows nothing until it is recalculated
         // and so measures nothing.
-        widths?.see(at, v, value?.width);
+        widths?.see(at, v, shownWidth(value));
         next = at + 1;
     }
     return `<row r="${rowNumber}"${rowAttributes(options, styles)}>${cells}</row>`;

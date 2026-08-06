@@ -35,6 +35,7 @@ export {
     bigintValue,
     dateValue,
     defaultTypes,
+    shownWidth,
     urlValue,
     withType,
     type ConvertContext,

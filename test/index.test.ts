@@ -36,6 +36,7 @@ describe('the public surface', () => {
         assert.equal(typeof core.dateValue, 'function');
         assert.equal(typeof core.bigintValue, 'function');
         assert.equal(typeof core.urlValue, 'function');
+        assert.equal(typeof core.shownWidth, 'function');
     });
 
     it('exports nothing else', () => {
@@ -57,6 +58,7 @@ describe('the public surface', () => {
             'defaultTypes',
             'isLineCommand',
             'isWorksheetCommand',
+            'shownWidth',
             'urlValue',
             'withType',
         ]);

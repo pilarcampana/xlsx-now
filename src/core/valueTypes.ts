@@ -65,11 +65,37 @@ export interface ConvertedValue {
     numFmt?: string | number;
     /**
      * How many characters this shows, for the column that is sizing itself.
-     * Left out, `v` is measured as it is written — which is right until the
-     * `numFmt` above makes the cell show something else, as a date's serial
-     * does.
+     * Left out, it is worked out from the `numFmt` above, and failing that
+     * `v` is measured as it is written — see `shownWidth`.
      */
     width?: number;
+}
+
+/**
+ * How many characters a converted value shows: what it said, or what its
+ * format says for it.
+ *
+ * A conversion that gave a `numFmt` has already said that `v` is not what the
+ * cell shows — asking for a format is what that means — so measuring `v`
+ * there is not measuring imprecisely, it is measuring the wrong thing. Half
+ * an hour written as a fraction of a day is `0.020833333333333332`, twenty
+ * characters of a number nobody will ever see, against the seven of the
+ * `0:30:00` the cell actually shows.
+ *
+ * A format code is a template of what comes out, so its own length is the
+ * estimate — which is what `DateFormats` already measures a spelled-out date
+ * by. It is an estimate and not a measurement: a format whose output grows
+ * with the value, like `#,##0.00` against a million, comes out short. That is
+ * what `width` is for, and a conversion that knows its own magnitude says it.
+ *
+ * A built-in format is an id with no code to measure, so there is nothing to
+ * work out from it and the type that used one says `width` itself — which is
+ * what `dateValue` does.
+ */
+export function shownWidth(value: ConvertedValue | undefined): number | undefined {
+    if (value === undefined) return undefined;
+    if (value.width !== undefined) return value.width;
+    return typeof value.numFmt === 'string' ? value.numFmt.length : undefined;
 }
 
 /**
