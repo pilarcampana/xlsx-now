@@ -31,6 +31,25 @@ describe('sanitizeText', () => {
         assert.equal(sanitizeText(undefined), 'undefined');
         assert.equal(sanitizeText({ toString: () => 'a & b' }), 'a &amp; b');
     });
+
+    it('drops the characters XML 1.0 has no place for', () => {
+        // One of these is enough to make the whole file unreadable, and there
+        // is no escape for them: XML leaves them out of `Char` altogether, so
+        // `&#0;` is refused as flatly as the character itself.
+        assert.equal(sanitizeText('ab\u0000cd\u0007ef'), 'abcdef');
+        assert.equal(sanitizeText('\u0008\u000B\u000C\u001F\uFFFE\uFFFF'), '');
+    });
+
+    it('keeps the three control characters XML does allow', () => {
+        assert.equal(sanitizeText('a\tb\nc\rd'), 'a\tb\nc\rd');
+    });
+
+    it('keeps a surrogate pair whole, emoji and all', () => {
+        // The pair is two code units and one character: dropping either half
+        // would break far more than it fixed.
+        assert.equal(sanitizeText('ok \u{1F600}'), 'ok \u{1F600}');
+        assert.equal(sanitizeText('\u{10FFFF}'), '\u{10FFFF}');
+    });
 });
 
 describe('columnLetters', () => {

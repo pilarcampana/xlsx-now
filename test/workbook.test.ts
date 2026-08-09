@@ -488,3 +488,37 @@ describe('a workbook of merged cells, read back with exceljs', () => {
         }
     });
 });
+
+describe('a workbook whose data carried what XML cannot, read back with exceljs', () => {
+    // One character XML 1.0 has no place for is enough to make the whole file
+    // unreadable — and it arrives in the data, not in the code: a truncated
+    // text field, a stray byte of something binary. The file has to open.
+    const DIRTY = `ab${String.fromCharCode(0)}cd${String.fromCharCode(7)}ef`;
+
+    it('opens, and shows the value without what could not be written', async () => {
+        const bytes = await collect(
+            createXlsxStream({
+                sheetName: `Hoja${String.fromCharCode(0)}1`,
+                rows: [
+                    [DIRTY],
+                    [{ v: DIRTY, s: { numFmt: `0"${DIRTY}"` } }],
+                    [{ v: 1, f: `CONCATENATE("${DIRTY}")` }],
+                ],
+            } as Parameters<typeof createXlsxStream>[0]),
+        );
+        // Reading it back at all is the assertion: exceljs parses the XML, and
+        // before this it failed with "disallowed character".
+        const sheet = await open(bytes as Buffer);
+        assert.equal(sheet.getCell('A1').value, 'abcdef');
+        assert.equal(sheet.getCell('A2').value, 'abcdef');
+        assert.equal(sheet.name, 'Hoja1');
+    });
+
+    it('leaves the file with none of those characters in it', async () => {
+        const bytes = await collect(
+            createXlsxStream({ rows: [[DIRTY]] } as Parameters<typeof createXlsxStream>[0]),
+        );
+        const { sheet } = await readXlsx(bytes);
+        assert.doesNotMatch(sheet, /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/);
+    });
+});

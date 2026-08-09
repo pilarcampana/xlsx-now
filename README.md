@@ -306,6 +306,25 @@ otherwise be trimmed, and on no other — the whitespace *inside* an element is
 never XML's to touch, so a string that starts and ends with a letter pays
 nothing for the attribute.
 
+**What XML cannot carry is dropped, not written out.** [ECMA-376][ecma376]
+files are XML 1.0, and XML 1.0 leaves most control characters out of the
+characters a document may contain at all — `#x0` to `#x8`, `#xB`, `#xC`, `#xE`
+to `#x1F` — as themselves *and* as the `&#0;` a numeric reference would be.
+There is no spelling of them a parser reads back, so one of them anywhere in
+the data is the whole file failing to open, and it arrives in the data rather
+than in the code: a truncated text field, a stray byte of something binary.
+They are taken out of every string on its way into the file — the same answer
+[a sheet name](#several-worksheets-in-one-stream) gives to a character Excel
+forbids, and what `exceljs` does with them too. Tab, line feed and carriage
+return are the three XML does allow, and they go in as they are.
+
+A surrogate pair is not one of these and is left whole: it is two code units
+and one character, and taking either half would break every emoji to fix
+nothing. What this does *not* do is keep an unwritable character by some
+escape of Excel's own (`_x0000_`): that is a way out of a different problem,
+and this writer makes spreadsheets rather than a container for bytes that
+survive a round trip.
+
 [ecma376]: https://ecma-international.org/publications-and-standards/standards/ecma-376/
 [msoi]: https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oi29500/17d11129-219b-4e2c-88db-45844d21e528
 
