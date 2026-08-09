@@ -424,6 +424,11 @@ export class StyleTable {
     /** A number standing for a spec object, so a stack of them has a key. */
     private readonly specIds = new WeakMap<StyleSpec, number>();
     private nextSpecId = 0;
+    /**
+     * Which `<cellXfs>` entries wrap their text, by index. Kept as the entries
+     * are registered because it is asked per cell — see `wraps`.
+     */
+    private readonly wrapping: boolean[] = [];
 
     constructor(declared: Readonly<Record<string, StyleSpec>> = {}) {
         this.declared = declared;
@@ -459,9 +464,27 @@ export class StyleTable {
             (borderId ? ' applyBorder="1"' : '') +
             (alignment ? ' applyAlignment="1"' : '') +
             (protection ? ' applyProtection="1"' : '');
-        return this.xfs.indexOf(
+        const index = this.xfs.indexOf(
             alignment || protection ? `${xf}>${alignment}${protection}</xf>` : `${xf}/>`,
         );
+        // Two specs come to the same entry only by saying the same thing, and
+        // the wrapping is part of what an entry says, so this cannot disagree
+        // with itself.
+        if (spec.wrap) this.wrapping[index] = true;
+        return index;
+    }
+
+    /**
+     * Whether the style at `index` wraps its text — the one thing a width has
+     * to ask a style about. A line break in a value is shown as a line break
+     * only where the cell wraps, so it is only there that a column has the
+     * longest line to fit rather than the whole text; see `cellTextLength`.
+     *
+     * By index, and not by ref, because the index is what the cell already
+     * worked out: asking this costs an array lookup and resolves nothing.
+     */
+    wraps(index: number): boolean {
+        return this.wrapping[index] === true;
     }
 
     /**

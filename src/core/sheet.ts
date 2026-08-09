@@ -479,8 +479,9 @@ export function cellRowXml(
         // and so measures nothing. A value shown across several columns
         // measures none of them: Excel's own autofit passes merged cells by,
         // and a title stretched over three columns is not how wide the first
-        // one has to be.
-        if (colSpan === 1) widths?.see(at, v, shownWidth(value));
+        // one has to be. Whether the style wraps is what says how much of a
+        // value with line breaks in it the column has to fit.
+        if (colSpan === 1) widths?.see(at, v, shownWidth(value), styles.wraps(style));
         next = at + 1;
     }
     // Whatever the merges above left past the row's own last cell.

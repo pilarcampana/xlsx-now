@@ -41,6 +41,42 @@ describe('cellTextLength', () => {
     });
 });
 
+describe('cellTextLength: the line breaks inside a cell', () => {
+    const TEXT = 'uno\ndos y dos\ntres';
+
+    it('counts the whole text where the cell does not wrap', () => {
+        // Excel shows a line break as one only where the text wraps: without
+        // it the value is on one line, break and all, and that is the width.
+        assert.equal(cellTextLength(TEXT), TEXT.length);
+        assert.equal(cellTextLength(TEXT, undefined, false), TEXT.length);
+    });
+
+    it('counts the longest line where it does', () => {
+        assert.equal(cellTextLength(TEXT, undefined, true), 'dos y dos'.length);
+    });
+
+    it('leaves the carriage return of a CRLF out of the line it ends', () => {
+        // It is not a character the cell shows, so it is not one the column
+        // has to fit.
+        assert.equal(cellTextLength('uno\r\ndos y dos', undefined, true), 'dos y dos'.length);
+    });
+
+    it('measures a wrapping cell with no break in it as it always did', () => {
+        assert.equal(cellTextLength('Ana & Co', undefined, true), 8);
+    });
+
+    it('counts an empty line as the nothing it is', () => {
+        assert.equal(cellTextLength('\n\n', undefined, true), 0);
+        assert.equal(cellTextLength('uno\n\n', undefined, true), 3);
+    });
+
+    it('still takes the width the value\'s own type gave over any of this', () => {
+        // A type that says how wide its value shows has already answered; the
+        // serial underneath has no line breaks to look for.
+        assert.equal(cellTextLength(45306, 10, true), 10);
+    });
+});
+
 describe('columnWidth', () => {
     it('is the characters plus the padding a column carries, in 1/256ths', () => {
         // ECMA-376 §18.3.1.13: the count is not the width. Eight characters

@@ -352,6 +352,30 @@ describe('StyleTable: the number format a value brought with it', () => {
     });
 });
 
+describe('StyleTable: which styles wrap their text', () => {
+    // What a width has to ask a style about: a line break is shown as one
+    // only where the cell wraps. See `cellTextLength`.
+    it('says so for a style that wraps, by the index the cell was written with', () => {
+        const styles = new StyleTable({ note: { wrap: true } });
+        assert.ok(styles.wraps(styles.index('note')));
+        assert.ok(styles.wraps(styles.index({ wrap: true })));
+    });
+
+    it('says no for the default style and for one that says nothing about it', () => {
+        const styles = new StyleTable();
+        assert.ok(!styles.wraps(0));
+        assert.ok(!styles.wraps(styles.index({ bold: true })));
+        assert.ok(!styles.wraps(styles.index({ wrap: false })));
+    });
+
+    it('follows the wrap through a base, a stack and a number format', () => {
+        const styles = new StyleTable({ note: { wrap: true }, long: { base: 'note', size: 8 } });
+        assert.ok(styles.wraps(styles.index('long')));
+        assert.ok(styles.wraps(styles.index(styles.stack('note', undefined, { bold: true }))));
+        assert.ok(styles.wraps(styles.forValue('#,##0.00', 'note')));
+    });
+});
+
 describe('StyleTable: the styles a cell falls under, stacked', () => {
     const COLUMN: StyleSpec = { bg: '#eee' };
     const ROW: StyleSpec = { bold: true };

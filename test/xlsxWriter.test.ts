@@ -585,6 +585,27 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         assert.ok(sheet.includes(measured(2, 10)), sheet);
     });
 
+    it('sizes a wrapping cell by its longest line, and any other by the whole text', async () => {
+        // The same value under the two styles: with wrap text Excel shows one
+        // line per break, so the column has the longest of them to fit; with
+        // no wrap it shows the text on one line, break and all.
+        const value = 'uno\ndos y dos';
+        const { sheet } = await readXlsx(
+            write({ autoWidthMax: 50 }, [[{ v: value, s: { wrap: true } }, value]]),
+        );
+        assert.ok(sheet.includes(measured(1, 'dos y dos'.length)), sheet);
+        assert.ok(sheet.includes(measured(2, value.length)), sheet);
+    });
+
+    it('reads the wrap off the whole style a cell falls under, not off its own', async () => {
+        // A column that wraps and a cell that says nothing about it: the cell
+        // still wraps, so it is still measured by its longest line.
+        const { sheet } = await readXlsx(
+            write({ autoWidthMax: 50, columnFormats: [{ s: { wrap: true } }] }, [['uno\ndos y dos']]),
+        );
+        assert.ok(sheet.includes(measured(1, 'dos y dos'.length, ' style="1"')), sheet);
+    });
+
     it('keeps the <cols> ahead of the rows it was worked out from', async () => {
         const { sheet } = await readXlsx(write({ autoWidthMax: 20 }, [['abc']]));
         assert.ok(sheet.indexOf('<cols>') < sheet.indexOf('<sheetData>'), sheet);

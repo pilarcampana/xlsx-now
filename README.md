@@ -413,7 +413,10 @@ into an attribute that makes the file fail to open. `numFmt` is the format
 code as Excel spells it (`'yyyy-mm-dd'`, `'0.00%'`), or a number for one of
 Excel's built-in formats. `border.all` covers the four sides, under whatever
 a side says for itself; the diagonal is its own, with `diagonalUp` and
-`diagonalDown` to say which way it runs.
+`diagonalDown` to say which way it runs. `wrap` is the one field a width reads
+too: a line break inside a value is shown as a line break only where the cell
+wraps, and that is what decides how a column
+[sizes itself](#columns-sized-by-what-they-hold-autowidthmax) around one.
 
 **Declared once, asked for by name.** Nothing *has* to be declared — a cell
 can carry a style outright — but a name keeps one look in one place, and it is
@@ -728,6 +731,31 @@ the file to be wide for until a reader recalculates it. The one thing this
 cannot see is a *number format*: `1234.5` is measured as the six characters it
 is written as, not as the `1.234,50` a `numFmt` may show it as. A column whose
 format makes its values longer is a column to give a width to outright.
+
+**A line break is measured as one only where the cell wraps.** A value with a
+`\n` in it is two things depending on the style it falls under, and Excel is
+the one drawing the distinction: with `wrap` the cell shows one line per
+break, so what the column has to fit is the *longest line*; without it the
+break is not shown at all and the text runs on one line, which is the whole
+length.
+
+```js
+[{ v: 'uno\ndos y dos', s: { wrap: true } }]   // measured as 9, the longest line
+[{ v: 'uno\ndos y dos' }]                      // measured as 13, all of it
+```
+
+That is why a `CHAR(10)` typed into a cell without wrap text seems to do
+nothing, and why Alt+Enter turns wrapping on as it inserts one. A merged cell
+is where multi-line text tends to end up, which is what makes this worth
+getting right: a title of three lines used to size its column to all three
+run together. The wrap is read off the whole style the cell falls under — the
+column's, the row's and its own, stacked — and not off what the cell alone
+says. A `\r\n` counts as the one break it is.
+
+There is no option to turn this off, because there is nothing to turn off: a
+cell that does not wrap is out of it before its text is looked at, and
+measures exactly what it always did. The scan is paid by the cells that wrap,
+and the splitting only by the ones that wrap *and* have a break in them.
 
 **What lands in the `<col>` is not the count.** A column's `width` is measured
 in multiples of the widest digit of the normal font *plus* five pixels of
