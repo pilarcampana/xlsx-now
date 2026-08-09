@@ -5,12 +5,16 @@
 import type { NativeValue } from './valueTypes.js';
 
 /**
- * The longest line of a text that has more than one, in characters.
+ * The longest line of a text, in characters — which for a text of one line is
+ * the whole of it, so there is nothing to ask before calling this.
  *
  * Walked rather than split: this is the one path that allocates per cell if
  * it is written the obvious way, and the answer is a number. A `\r\n` counts
  * as the line break it is — the carriage return is not a character the cell
- * shows, so it is not one the column has to fit.
+ * shows, so it is not one the column has to fit. A carriage return with no
+ * line feed after it is the same character and counts the same way: what a
+ * reader finds there is a line break, since XML turns a lone `\r` into a `\n`
+ * on its way in.
  */
 function longestLine(text: string): number {
     let longest = 0;
@@ -57,9 +61,10 @@ export function cellTextLength(value: NativeValue, shown?: number, wraps?: boole
     if (shown !== undefined) return shown;
     if (typeof value === 'boolean') return value ? 4 : 5;
     const text = String(value);
-    // The scan is what a wrapping cell pays; every other cell — which is
-    // nearly all of them — is out before the text is looked at.
-    if (!wraps || text.indexOf('\n') < 0) return text.length;
+    // A cell that does not wrap — which is nearly every cell — is out before
+    // its text is looked at at all. The one that does is walked, break in it
+    // or not: a text of one line is its own longest line.
+    if (!wraps) return text.length;
     return longestLine(text);
 }
 

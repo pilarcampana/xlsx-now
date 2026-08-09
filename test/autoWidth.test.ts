@@ -62,7 +62,16 @@ describe('cellTextLength: the line breaks inside a cell', () => {
     });
 
     it('measures a wrapping cell with no break in it as it always did', () => {
+        // A text of one line is its own longest line, so nothing has to be
+        // asked before looking for them.
         assert.equal(cellTextLength('Ana & Co', undefined, true), 8);
+        assert.equal(cellTextLength('', undefined, true), 0);
+    });
+
+    it('counts a lone carriage return as the break a reader will find there', () => {
+        // XML turns a `\r` into a `\n` on its way in, so the cell that is read
+        // back has a line break at the end and a line of three characters.
+        assert.equal(cellTextLength('abc\r', undefined, true), 3);
     });
 
     it('counts an empty line as the nothing it is', () => {

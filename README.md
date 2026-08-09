@@ -773,8 +773,9 @@ says. A `\r\n` counts as the one break it is.
 
 There is no option to turn this off, because there is nothing to turn off: a
 cell that does not wrap is out of it before its text is looked at, and
-measures exactly what it always did. The scan is paid by the cells that wrap,
-and the splitting only by the ones that wrap *and* have a break in them.
+measures exactly what it always did. Only the cells that wrap are read for
+their lines — and a text of one line is its own longest line, so that is one
+pass over it either way.
 
 **What lands in the `<col>` is not the count.** A column's `width` is measured
 in multiples of the widest digit of the normal font *plus* five pixels of
