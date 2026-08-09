@@ -434,3 +434,91 @@ describe('a row style and a column style, read back with exceljs', () => {
         assert.match(xml, /<col min="1" max="1" style="\d+"\/>/);
     });
 });
+
+describe('a workbook of merged cells, read back with exceljs', () => {
+    // A header spanning three columns, a category spanning three rows, and a
+    // block spanning both — the three shapes Excel merges.
+    let sheet: ExcelJS.Worksheet;
+    let xml: string;
+
+    before(async () => {
+        const bytes = await collect(
+            createXlsxStream({
+                rows: [
+                    [{ v: 'Ventas 2024', s: { bold: true, border: { all: 'thin' } }, colSpan: 3 }],
+                    [{ v: 'Fruta', rowSpan: 3 }, 'manzana', 10],
+                    [undefined, 'pera', 20],
+                    [undefined, 'banana', 30],
+                    [{ v: 'Total', colSpan: 2, rowSpan: 2 }, undefined, 60],
+                    [undefined, undefined, 15],
+                ],
+            } as Parameters<typeof createXlsxStream>[0]),
+        );
+        xml = (await readXlsx(bytes)).sheet;
+        sheet = await open(bytes as Buffer);
+    });
+
+    it('comes back as the ranges it was written as', () => {
+        assert.deepEqual(sheet.model.merges, ['A1:C1', 'A2:A4', 'A5:B6']);
+    });
+
+    it('puts the merged ranges after the sheet data, which is where they go', () => {
+        assert.match(xml, /<\/sheetData><mergeCells count="3">/);
+    });
+
+    it('shows the value of the first cell of the range, and nothing under it', () => {
+        assert.equal(sheet.getCell('A1').value, 'Ventas 2024');
+        assert.equal(sheet.getCell('A2').value, 'Fruta');
+        // exceljs reads a covered cell as bound to the one that declared the
+        // merge, which is the same thing Excel shows.
+        assert.equal(sheet.getCell('B1').master.address, 'A1');
+        assert.equal(sheet.getCell('A4').master.address, 'A2');
+    });
+
+    it('leaves the rest of the sheet where the merges did not move it', () => {
+        assert.equal(sheet.getCell('B3').value, 'pera');
+        assert.equal(sheet.getCell('C5').value, 60);
+    });
+
+    it('carries the border of the range around the whole of it', () => {
+        // The one thing a merge needs from the cells it covers: xlsx has no
+        // border around a range, only borders around cells.
+        for (const ref of ['A1', 'B1', 'C1']) {
+            assert.ok(sheet.getCell(ref).border?.top, `${ref} lost the top border`);
+        }
+    });
+});
+
+describe('a workbook whose data carried what XML cannot, read back with exceljs', () => {
+    // One character XML 1.0 has no place for is enough to make the whole file
+    // unreadable — and it arrives in the data, not in the code: a truncated
+    // text field, a stray byte of something binary. The file has to open.
+    const DIRTY = `ab${String.fromCharCode(0)}cd${String.fromCharCode(7)}ef`;
+
+    it('opens, and shows the value without what could not be written', async () => {
+        const bytes = await collect(
+            createXlsxStream({
+                sheetName: `Hoja${String.fromCharCode(0)}1`,
+                rows: [
+                    [DIRTY],
+                    [{ v: DIRTY, s: { numFmt: `0"${DIRTY}"` } }],
+                    [{ v: 1, f: `CONCATENATE("${DIRTY}")` }],
+                ],
+            } as Parameters<typeof createXlsxStream>[0]),
+        );
+        // Reading it back at all is the assertion: exceljs parses the XML, and
+        // before this it failed with "disallowed character".
+        const sheet = await open(bytes as Buffer);
+        assert.equal(sheet.getCell('A1').value, 'abcdef');
+        assert.equal(sheet.getCell('A2').value, 'abcdef');
+        assert.equal(sheet.name, 'Hoja1');
+    });
+
+    it('leaves the file with none of those characters in it', async () => {
+        const bytes = await collect(
+            createXlsxStream({ rows: [[DIRTY]] } as Parameters<typeof createXlsxStream>[0]),
+        );
+        const { sheet } = await readXlsx(bytes);
+        assert.doesNotMatch(sheet, /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/);
+    });
+});

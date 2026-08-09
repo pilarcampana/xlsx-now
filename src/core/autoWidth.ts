@@ -5,6 +5,32 @@
 import type { NativeValue } from './valueTypes.js';
 
 /**
+ * The longest line of a text, in characters — which for a text of one line is
+ * the whole of it, so there is nothing to ask before calling this.
+ *
+ * Walked rather than split: this is the one path that allocates per cell if
+ * it is written the obvious way, and the answer is a number. A `\r\n` counts
+ * as the line break it is — the carriage return is not a character the cell
+ * shows, so it is not one the column has to fit. A carriage return with no
+ * line feed after it is the same character and counts the same way: what a
+ * reader finds there is a line break, since XML turns a lone `\r` into a `\n`
+ * on its way in.
+ */
+function longestLine(text: string): number {
+    let longest = 0;
+    let from = 0;
+    for (;;) {
+        const at = text.indexOf('\n', from);
+        const end = at < 0 ? text.length : at;
+        const carriageReturn = end > from && text.charCodeAt(end - 1) === 13;
+        const length = end - from - (carriageReturn ? 1 : 0);
+        if (length > longest) longest = length;
+        if (at < 0) return longest;
+        from = at + 1;
+    }
+}
+
+/**
  * How many characters a cell shows.
  *
  * A string is its own length and a number is the length of the digits it is
@@ -18,14 +44,28 @@ import type { NativeValue } from './valueTypes.js';
  * characters on the screen, and only the type that made it a serial knows
  * that.
  *
+ * `wraps` is whether the cell's style wraps its text, and it is what decides
+ * what a line break in the value means. A cell that wraps shows one line per
+ * break, so what the column has to fit is the longest of them; a cell that
+ * does not shows the text on one line, break and all, and there the whole
+ * length is the answer — which is why this cannot be settled by looking at
+ * the value alone. Excel is the one drawing the distinction: a `CHAR(10)` in
+ * a cell without wrap text is not shown as a line break at all, which is why
+ * Alt+Enter turns wrapping on as it inserts one.
+ *
  * An empty cell measures 0: it takes part in no width, so a column of blanks
  * is a column nobody asked to resize.
  */
-export function cellTextLength(value: NativeValue, shown?: number): number {
+export function cellTextLength(value: NativeValue, shown?: number, wraps?: boolean): number {
     if (value === null || value === undefined) return 0;
     if (shown !== undefined) return shown;
     if (typeof value === 'boolean') return value ? 4 : 5;
-    return String(value).length;
+    const text = String(value);
+    // A cell that does not wrap — which is nearly every cell — is out before
+    // its text is looked at at all. The one that does is walked, break in it
+    // or not: a text of one line is its own longest line.
+    if (!wraps) return text.length;
+    return longestLine(text);
 }
 
 /**
@@ -91,9 +131,9 @@ export class WidthMeter {
     }
 
     /** One cell, in the column it was written in. */
-    see(column: number, value: NativeValue, shown?: number): void {
+    see(column: number, value: NativeValue, shown?: number, wraps?: boolean): void {
         if (!this.measures) return;
-        const length = cellTextLength(value, shown);
+        const length = cellTextLength(value, shown, wraps);
         if (!length) return;
         const width = length > this.max ? this.max : length;
         if (width > (this.widths[column] ?? 0)) this.widths[column] = width;

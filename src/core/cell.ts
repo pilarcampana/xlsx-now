@@ -6,8 +6,39 @@ const EXCEL_EPOCH_OFFSET_DAYS = 25569;
 const MS_PER_DAY = 86400000;
 const MS_PER_MINUTE = 60000;
 
+/**
+ * The characters XML 1.0 has no place for — §2.2 leaves them out of `Char`
+ * altogether, so there is no spelling of them a parser will read back: not as
+ * themselves, and not as the `&#0;` a numeric reference would be either.
+ *
+ * The three control characters that *are* allowed stay: tab, line feed and
+ * carriage return. What is left is what a text field of a database ends up
+ * carrying by accident — a truncated field, a stray byte of something binary
+ * — and one of them is enough to make the whole file unreadable.
+ */
+const FORBIDDEN_IN_XML = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
+
+/**
+ * Text as XML can carry it: the five entities spelled out, and the characters
+ * XML has no room for dropped.
+ *
+ * Dropping is the same answer `sheetName` gives to a character Excel forbids,
+ * and for the same reason: a workbook with one of these in it is a file that
+ * does not open at all, and by the time anyone finds that out the rows are
+ * long gone. It is what `exceljs` does with them too. Keeping them by some
+ * escape of Excel's own — `_x0000_` — would be the other way out, and it is a
+ * way out of a different problem: this writer makes spreadsheets, not a
+ * container for bytes that survive a round trip.
+ *
+ * A lone surrogate is not one of these. It is not a character either, but it
+ * comes out of `TextEncoder` as the replacement character rather than as
+ * anything a parser refuses, so the file still opens. Dropping it here would
+ * mean taking apart the pairs that make up every emoji, which is a good deal
+ * worse than what it would fix.
+ */
 export function sanitizeText(value: unknown): string {
     return String(value)
+        .replace(FORBIDDEN_IN_XML, '')
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
@@ -113,8 +144,10 @@ function keepsSpaces(text: string): boolean {
 
 /** The `<is>` of an inline string: the value itself, in the cell, escaped. */
 function inlineStringXml(value: NativeValue): string {
-    // Escaping never touches the edges — none of the five entities is a
-    // space — so the sanitized text answers for the original.
+    // Asked of the sanitized text, which is the one being written: escaping
+    // never touches the edges — none of the five entities is a space — but a
+    // dropped character can leave a space at one, and then the `<t>` is a
+    // `<t>` that starts with a space.
     const text = sanitizeText(value);
     return `<is><t${keepsSpaces(text) ? ' xml:space="preserve"' : ''}>${text}</t></is>`;
 }

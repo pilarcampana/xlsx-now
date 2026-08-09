@@ -73,6 +73,30 @@ export interface StyledCell {
      * it has already gone past is an error, not a cell written twice.
      */
     col?: string | number;
+    /**
+     * How many columns the cell takes, its own included: `3` merges it with
+     * the two to its right, and `1` — the default — merges nothing.
+     *
+     * A merged range shows the value of its first cell and nothing else, so
+     * the columns it covers are not the row's to write in: leave a hole
+     * there, or reach past the merge with the next cell's `col`.
+     *
+     * ```js
+     * [{ v: 'Ventas 2024', colSpan: 3 }, undefined, undefined, 'Total']
+     * [{ v: 'Ventas 2024', colSpan: 3 }, { v: 'Total', col: 'D' }]
+     * ```
+     */
+    colSpan?: number;
+    /**
+     * How many rows the cell takes, its own included: `3` merges it with the
+     * two below it, and `1` — the default — merges nothing. Together with
+     * `colSpan` it is a block, as Excel merges one.
+     *
+     * The rows underneath have to leave the covered columns empty, the same
+     * way the rest of the row does — the sheet is a grid, and a merge takes
+     * its place in it rather than pushing anything along.
+     */
+    rowSpan?: number;
 }
 
 /** One position of a row array: a bare value, or a cell that says more. */

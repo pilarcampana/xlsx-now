@@ -12,6 +12,7 @@ import {
     type SheetOptions,
 } from './command.js';
 import { columnsMode, type ColumnsMode } from './columns.js';
+import { MergeTable } from './merges.js';
 import {
     contentTypesXml,
     rootRelsXml,
@@ -23,8 +24,8 @@ import {
 import {
     cellRowXml,
     columnStyles,
+    sheetFooterXml,
     sheetHeaderXml,
-    SHEET_FOOTER,
     type ColumnFormats,
     type Freeze,
     type RowOptions,
@@ -136,6 +137,13 @@ export class XlsxWriter {
      */
     private columns: readonly (StyleRef | undefined)[] = [];
     /**
+     * The merged ranges of the sheet being written. Held to the end of the
+     * sheet because that is where they go: `<mergeCells>` comes after
+     * `<sheetData>`, so the rows stream out and the ranges wait for the
+     * footer.
+     */
+    private merges = new MergeTable();
+    /**
      * What the header of the sheet being written will be made of. Opening a
      * sheet does not write it: `<cols>` carries widths the cells may still be
      * measuring, so the header is put together — and the worksheet part
@@ -213,6 +221,7 @@ export class XlsxWriter {
             options,
             this.widths,
             this.columns,
+            this.merges,
         );
         this.rowNumber++;
         // A sheet that is measuring itself has nowhere to push to: its `<cols>`
@@ -244,6 +253,7 @@ export class XlsxWriter {
 
         this.sheetNames.push(name);
         this.widths = new WidthMeter(autoWidthMax);
+        this.merges = new MergeTable();
         this.columns = columnStyles(columnFormats);
         this.pendingHeader = { freeze, columnFormats };
         this.batch = '';
@@ -256,9 +266,20 @@ export class XlsxWriter {
     }
 
     private closeSheet(): void {
+        // A `rowSpan` reaching past the last row of the sheet is a range
+        // Excel repairs the file to be rid of, and it is a row the caller
+        // meant to write and did not.
+        const unfinished = this.merges.unfinishedAt(this.rowNumber);
+        if (unfinished) {
+            throw new Error(
+                `The merge "${unfinished.ref}" needs a row ${unfinished.through} and the sheet ` +
+                    `ends at row ${this.rowNumber - 1}: a merge cannot reach past the last row ` +
+                    'of its sheet.',
+            );
+        }
         // Whatever is left of the sheet, header included when nothing of it
         // has gone out yet — a sheet with no row in it is still a sheet.
-        this.batch += SHEET_FOOTER;
+        this.batch += sheetFooterXml(this.merges);
         this.pushBatch();
         this.zip.endEntry();
         this.open = false;
