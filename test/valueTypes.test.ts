@@ -270,7 +270,7 @@ describe('a value of a registered type, in a row', () => {
     });
 
     it('still refuses an object that meant to be a cell and was spelled wrong', () => {
-        assert.throws(() => rowXml([{ value: 1 } as never]), /"v", "s", "f", "t" or "col"/);
+        assert.throws(() => rowXml([{ value: 1 } as never]), /"v", "s", "f", "t", "col", "colSpan" or "rowSpan"/);
     });
 
     it('refuses an instance with no class to name without pretending it has one', () => {

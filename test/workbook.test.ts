@@ -434,3 +434,57 @@ describe('a row style and a column style, read back with exceljs', () => {
         assert.match(xml, /<col min="1" max="1" style="\d+"\/>/);
     });
 });
+
+describe('a workbook of merged cells, read back with exceljs', () => {
+    // A header spanning three columns, a category spanning three rows, and a
+    // block spanning both — the three shapes Excel merges.
+    let sheet: ExcelJS.Worksheet;
+    let xml: string;
+
+    before(async () => {
+        const bytes = await collect(
+            createXlsxStream({
+                rows: [
+                    [{ v: 'Ventas 2024', s: { bold: true, border: { all: 'thin' } }, colSpan: 3 }],
+                    [{ v: 'Fruta', rowSpan: 3 }, 'manzana', 10],
+                    [undefined, 'pera', 20],
+                    [undefined, 'banana', 30],
+                    [{ v: 'Total', colSpan: 2, rowSpan: 2 }, undefined, 60],
+                    [undefined, undefined, 15],
+                ],
+            } as Parameters<typeof createXlsxStream>[0]),
+        );
+        xml = (await readXlsx(bytes)).sheet;
+        sheet = await open(bytes as Buffer);
+    });
+
+    it('comes back as the ranges it was written as', () => {
+        assert.deepEqual(sheet.model.merges, ['A1:C1', 'A2:A4', 'A5:B6']);
+    });
+
+    it('puts the merged ranges after the sheet data, which is where they go', () => {
+        assert.match(xml, /<\/sheetData><mergeCells count="3">/);
+    });
+
+    it('shows the value of the first cell of the range, and nothing under it', () => {
+        assert.equal(sheet.getCell('A1').value, 'Ventas 2024');
+        assert.equal(sheet.getCell('A2').value, 'Fruta');
+        // exceljs reads a covered cell as bound to the one that declared the
+        // merge, which is the same thing Excel shows.
+        assert.equal(sheet.getCell('B1').master.address, 'A1');
+        assert.equal(sheet.getCell('A4').master.address, 'A2');
+    });
+
+    it('leaves the rest of the sheet where the merges did not move it', () => {
+        assert.equal(sheet.getCell('B3').value, 'pera');
+        assert.equal(sheet.getCell('C5').value, 60);
+    });
+
+    it('carries the border of the range around the whole of it', () => {
+        // The one thing a merge needs from the cells it covers: xlsx has no
+        // border around a range, only borders around cells.
+        for (const ref of ['A1', 'B1', 'C1']) {
+            assert.ok(sheet.getCell(ref).border?.top, `${ref} lost the top border`);
+        }
+    });
+});

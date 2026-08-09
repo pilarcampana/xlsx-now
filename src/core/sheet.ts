@@ -1,13 +1,23 @@
 import type { WidthMeter } from './autoWidth.js';
-import { cellRef, cellXml, columnIndex } from './cell.js';
+import { cellRef, cellXml, columnIndex, columnLetters } from './cell.js';
+import { MergeTable } from './merges.js';
 import type { StyleRef, StyleTable } from './styles.js';
-import type { Cell, CellRow, StyledCell } from './types.js';
+import type { Cell, CellRow, CellValue, StyledCell } from './types.js';
 import { shownWidth, type NativeValue, type ValueTypes } from './valueTypes.js';
 
 const SHEET_PROLOG =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">';
-export const SHEET_FOOTER = '</sheetData></worksheet>';
+
+/**
+ * Everything the worksheet carries after its last `<row>`. `<mergeCells>` goes
+ * between the two, which is the whole reason merges cost the writer nothing
+ * to stream: ECMA-376 §18.3.1.99 puts it after `<sheetData>`, so the ranges
+ * are still the sheet's to write once its last row has gone out.
+ */
+export function sheetFooterXml(merges: MergeTable): string {
+    return `</sheetData>${merges.xml()}</worksheet>`;
+}
 
 /** How much of the sheet stays put while the rest of it scrolls. */
 export interface Freeze {
@@ -233,7 +243,15 @@ export function isStyledCell(cell: Cell, types: ValueTypes): cell is StyledCell 
     if (typeof cell !== 'object' || cell === null) return false;
     if (types.handlerFor(cell) !== undefined) return false;
     const styled = cell as StyledCell;
-    if ('v' in styled || 's' in styled || 'f' in styled || 't' in styled || 'col' in styled) {
+    if (
+        'v' in styled ||
+        's' in styled ||
+        'f' in styled ||
+        't' in styled ||
+        'col' in styled ||
+        'colSpan' in styled ||
+        'rowSpan' in styled
+    ) {
         return true;
     }
     if (types.objectHandler !== undefined) return false;
@@ -260,10 +278,46 @@ function unknownCellError(cell: object): Error {
     }
     const keys = Object.keys(cell);
     return new Error(
-        'A cell is a value, or an object with "v", "s", "f", "t" or "col": ' +
+        'A cell is a value, or an object with "v", "s", "f", "t", "col", "colSpan" or "rowSpan": ' +
             (keys.length
                 ? `this one has ${keys.map((key) => `"${key}"`).join(', ')}.`
                 : 'this one is empty.'),
+    );
+}
+
+/**
+ * How many columns or rows a cell said it takes, as a count. Left out it is
+ * `1` — the cell itself, merged with nothing — and anything that is not a
+ * whole count of cells is a caller who meant something else.
+ */
+function spanCount(span: number | undefined, field: 'colSpan' | 'rowSpan'): number {
+    if (span === undefined) return 1;
+    if (!Number.isInteger(span) || span < 1) {
+        throw new Error(
+            `"${field}" is how many cells a merge takes, its own included, counted from 1: ` +
+                `${JSON.stringify(span)} is not one of them.`,
+        );
+    }
+    return span;
+}
+
+/**
+ * Whether what the caller left in a column some merge covers can be there.
+ *
+ * A merged range shows the value of its first cell and nothing else — Excel
+ * says as much when it merges, and drops the rest — so a value written under
+ * one would go into the file and never be seen again. A hole, a `null`, an
+ * empty string: those are the column being left alone, which is what is
+ * being asked for. A style there is the columns mode's or the caller's, and
+ * it is not what gets written: every cell of a merge carries the style of the
+ * cell that declared it.
+ */
+function fitsUnderMerge(cell: Cell, styled: StyledCell | undefined): boolean {
+    const value = styled ? styled.v : (cell as CellValue);
+    if (value !== undefined && value !== null && value !== '') return false;
+    return (
+        styled === undefined ||
+        (styled.f === undefined && styled.colSpan === undefined && styled.rowSpan === undefined)
     );
 }
 
@@ -294,6 +348,12 @@ function unknownCellError(cell: object): Error {
  * then under the row's own `s`, then under whatever it says for itself, and
  * what gets written on the `<c>` is the three of them stacked: xlsx has no
  * inheritance to lean on, so the cell carries the answer.
+ *
+ * `merges` is the sheet's own, and it is read as much as it is written to: a
+ * `colSpan` or a `rowSpan` goes into it, and what earlier rows put into it is
+ * what says which of this row's columns are already taken. The default is
+ * there for a row written on its own, with no sheet around it to remember
+ * anything.
  */
 export function cellRowXml(
     rowNumber: number,
@@ -303,10 +363,48 @@ export function cellRowXml(
     options?: RowOptions,
     widths?: WidthMeter,
     columns?: readonly (StyleRef | undefined)[],
+    merges: MergeTable = new MergeTable(),
 ): string {
     let cells = '';
     let next = 0;
     const rowStyle = options?.s;
+    // What a merge declared in an earlier row leaves in this one. Ascending
+    // by column, and read in step with the row's own cells: the `<c>` of a
+    // row go in column order, whoever they came from.
+    const covered = merges.openAt(rowNumber);
+    let pending = 0;
+    // The columns a merge of *this* row took, past the cell that declared it,
+    // and the range they belong to. One watermark is enough: a line only
+    // moves forward, so an earlier merge of the same row is behind it.
+    let takenUntil = 0;
+    let takenBy = '';
+
+    /**
+     * The cells the merges from above put in this row, up to `column`. They
+     * carry the style of the cell that declared the merge — an empty cell
+     * under the default style is nothing at all, and writes nothing.
+     */
+    const coveredBefore = (column: number): string => {
+        let xml = '';
+        while (pending < covered.length && covered[pending]!.column < column) {
+            const span = covered[pending]!;
+            xml += cellXml(undefined, cellRef(span.column, rowNumber), span.style);
+            pending++;
+        }
+        return xml;
+    };
+
+    /**
+     * The merge that has already taken `column`, if one has: this row's own,
+     * or one still coming down from an earlier row. Either way the column is
+     * not the cell's to write in.
+     */
+    const takenAt = (column: number): string | undefined => {
+        if (column < takenUntil) return takenBy;
+        const span = covered[pending];
+        return span?.column === column ? span.ref : undefined;
+    };
+
     for (const cell of row) {
         // A hole still takes up its column: the array is the sheet's layout
         // as much as it is the values.
@@ -314,43 +412,78 @@ export function cellRowXml(
             next++;
             continue;
         }
-        if (!isStyledCell(cell, types)) {
-            const value = types.convert(cell);
-            const v = value ? value.v : (cell as NativeValue);
-            cells += cellXml(
-                v,
-                cellRef(next, rowNumber),
-                styles.forValue(value?.numFmt, styles.stack(columns?.[next], rowStyle, undefined)),
-                undefined,
-                value?.t,
-            );
-            widths?.see(next, v, shownWidth(value));
-            next++;
-            continue;
-        }
-        const at = cell.col === undefined ? next : columnAt(cell.col);
-        if (at < next) {
+        const styled = isStyledCell(cell, types) ? cell : undefined;
+        const at = styled?.col === undefined ? next : columnAt(styled.col);
+        if (styled?.col !== undefined && at < next) {
             throw new Error(
-                `Column "${cell.col}" comes before what row ${rowNumber} has already written: ` +
+                `Column "${styled.col}" comes before what row ${rowNumber} has already written: ` +
                     'a line fills its columns left to right, once each.',
             );
         }
-        const value = types.convert(cell.v);
-        const v = value ? value.v : (cell.v as NativeValue);
+        cells += coveredBefore(at);
+        const taken = takenAt(at);
+        if (taken !== undefined) {
+            if (!fitsUnderMerge(cell, styled)) {
+                throw new Error(
+                    `Column ${columnLetters(at)} of row ${rowNumber} is covered by the merge ` +
+                        `"${taken}": a merged range shows the value of its first cell, so the ` +
+                        'rest of it has to be left empty.',
+                );
+            }
+            // The merge's own cell for this column, when it is one coming
+            // from above: the one written here is the caller's hole.
+            cells += coveredBefore(at + 1);
+            next = at + 1;
+            continue;
+        }
+        const raw = styled ? styled.v : (cell as CellValue);
+        const value = types.convert(raw);
+        const v = value ? value.v : (raw as NativeValue);
+        const colSpan = spanCount(styled?.colSpan, 'colSpan');
+        const rowSpan = spanCount(styled?.rowSpan, 'rowSpan');
+        const style = styles.forValue(
+            value?.numFmt,
+            styles.stack(columns?.[at], rowStyle, styled?.s),
+        );
         cells += cellXml(
             v,
             cellRef(at, rowNumber),
-            styles.forValue(value?.numFmt, styles.stack(columns?.[at], rowStyle, cell.s)),
-            cell.f,
+            style,
+            styled?.f,
             // A `t` written on the cell is the caller asking for that one, so
             // it goes over whatever the value's type would have said.
-            cell.t ?? value?.t,
+            styled?.t ?? value?.t,
         );
+        if (colSpan > 1 || rowSpan > 1) {
+            // The next merge still coming down, if it starts inside this one.
+            // Two ranges that overlap are a file Excel repairs rather than
+            // opens, and it repairs it by dropping things.
+            const over = covered[pending];
+            if (over !== undefined && over.column < at + colSpan) {
+                throw new Error(
+                    `The merge starting at ${cellRef(at, rowNumber)} runs over "${over.ref}", ` +
+                        'which is still open: merged ranges cannot overlap.',
+                );
+            }
+            takenBy = merges.add(at, rowNumber, colSpan, rowSpan, style);
+            takenUntil = at + colSpan;
+            // The rest of the range, in this row: empty cells under the same
+            // style, which is what draws a border around a merge instead of
+            // around its first cell. The rows below get theirs from `covered`.
+            for (let column = at + 1; column < takenUntil; column++) {
+                cells += cellXml(undefined, cellRef(column, rowNumber), style);
+            }
+        }
         // A formula's cached result is what the column will have to show; a
         // formula with no result in hand shows nothing until it is recalculated
-        // and so measures nothing.
-        widths?.see(at, v, shownWidth(value));
+        // and so measures nothing. A value shown across several columns
+        // measures none of them: Excel's own autofit passes merged cells by,
+        // and a title stretched over three columns is not how wide the first
+        // one has to be.
+        if (colSpan === 1) widths?.see(at, v, shownWidth(value));
         next = at + 1;
     }
+    // Whatever the merges above left past the row's own last cell.
+    cells += coveredBefore(Infinity);
     return `<row r="${rowNumber}"${rowAttributes(options, styles)}>${cells}</row>`;
 }

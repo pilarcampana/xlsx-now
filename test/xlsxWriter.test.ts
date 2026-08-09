@@ -687,3 +687,35 @@ describe('XlsxWriter: columns sized by what they hold', () => {
         assert.throws(() => write({ autoWidthMax: 0 }, [['a']]), /autoWidthMax/);
     });
 });
+
+describe('XlsxWriter: merged cells', () => {
+    it('writes the ranges of the sheet into its footer', async () => {
+        const { sheet } = await readXlsx(
+            write({}, [[{ v: 'T', colSpan: 2 }], [{ v: 'F', rowSpan: 2 }], [undefined, 'x']]),
+        );
+        assert.ok(
+            sheet.includes('</sheetData><mergeCells count="2">' +
+                '<mergeCell ref="A1:B1"/><mergeCell ref="A2:A3"/></mergeCells></worksheet>'),
+        );
+    });
+
+    it('gives every sheet its own merges, and lets none reach into the next', async () => {
+        const { sheets } = await readXlsx(
+            write({}, [[{ v: 'T', colSpan: 2 }], { '#worksheet': 'Second' }, [{ v: 'U', colSpan: 3 }]]),
+        );
+        assert.ok(sheets[0]?.includes('<mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells>'));
+        assert.ok(sheets[1]?.includes('<mergeCells count="1"><mergeCell ref="A1:C1"/></mergeCells>'));
+    });
+
+    it('writes no mergeCells at all for a sheet that merged nothing', async () => {
+        const { sheet } = await readXlsx(write({}, [['a']]));
+        assert.ok(!sheet.includes('mergeCells'));
+    });
+
+    it('refuses a merge that reaches past the last row of its sheet', () => {
+        assert.throws(
+            () => write({}, [['a'], [{ v: 'F', rowSpan: 3 }], [undefined]]),
+            /The merge "A2:A4" needs a row 4 and the sheet ends at row 3/,
+        );
+    });
+});

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { columnWidth, WidthMeter } from '../src/core/autoWidth.js';
+import { MergeTable } from '../src/core/merges.js';
 import {
     cellRowXml,
-    SHEET_FOOTER,
+    sheetFooterXml,
     sheetHeaderXml,
     type ColumnFormats,
     type RowOptions,
@@ -17,6 +19,22 @@ import { ValueTypes } from '../src/core/valueTypes.js';
  */
 function rowXml(rowNumber: number, row: CellRow, options?: RowOptions): string {
     return cellRowXml(rowNumber, row, new StyleTable(), new ValueTypes(), options);
+}
+
+/**
+ * The same, on a sheet that remembers its merges: several rows written one
+ * after another against one table, as the writer does it, since a `rowSpan`
+ * is only visible in the rows underneath.
+ */
+function mergedRows(
+    rows: readonly CellRow[],
+    merges = new MergeTable(),
+    styles = new StyleTable(),
+): string[] {
+    const types = new ValueTypes();
+    return rows.map((row, index) =>
+        cellRowXml(index + 1, row, styles, types, undefined, undefined, undefined, merges),
+    );
 }
 
 /** Just the `<sheetViews>` of a worksheet header. */
@@ -68,9 +86,18 @@ describe('sheetHeaderXml', () => {
     });
 });
 
-describe('SHEET_FOOTER', () => {
+describe('sheetFooterXml', () => {
     it('closes what the header opened', () => {
-        assert.equal(SHEET_FOOTER, '</sheetData></worksheet>');
+        assert.equal(sheetFooterXml(new MergeTable()), '</sheetData></worksheet>');
+    });
+
+    it('writes the merged ranges between the two, which is where they go', () => {
+        const merges = new MergeTable();
+        merges.add(0, 1, 3, 1, 0);
+        assert.equal(
+            sheetFooterXml(merges),
+            '</sheetData><mergeCells count="1"><mergeCell ref="A1:C1"/></mergeCells></worksheet>',
+        );
     });
 });
 
@@ -252,6 +279,155 @@ describe('sheetHeaderXml: the columns of the sheet', () => {
 
     it('says what is not a column', () => {
         assert.throws(() => cols({ 'A1': { width: 3 } }), /is not a column/);
+    });
+});
+
+describe('cellRowXml: merged cells', () => {
+    it('takes the columns to the right, and says so in the ranges', () => {
+        const merges = new MergeTable();
+        const [row] = mergedRows([[{ v: 'T', colSpan: 3 }, undefined, undefined, 'x']], merges);
+        assert.equal(
+            row,
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>T</t></is></c>' +
+                '<c r="D1" t="inlineStr"><is><t>x</t></is></c></row>',
+        );
+        assert.equal(merges.xml(), '<mergeCells count="1"><mergeCell ref="A1:C1"/></mergeCells>');
+    });
+
+    it('reaches past the merge with a col instead of holes', () => {
+        const merges = new MergeTable();
+        const [row] = mergedRows([[{ v: 'T', colSpan: 3 }, { v: 'x', col: 'D' }]], merges);
+        assert.ok(row?.includes('<c r="D1" t="inlineStr"><is><t>x</t></is></c>'));
+        assert.equal(merges.xml(), '<mergeCells count="1"><mergeCell ref="A1:C1"/></mergeCells>');
+    });
+
+    it('gives the covered cells the style of the one that declared the merge', () => {
+        // Which is what draws a border around the whole of a range: xlsx has
+        // no border around a merge, only borders around its cells.
+        const [row] = mergedRows([[{ v: 'T', s: { bold: true }, colSpan: 3 }]]);
+        assert.equal(
+            row,
+            '<row r="1"><c r="A1" t="inlineStr" s="1"><is><t>T</t></is></c>' +
+                '<c r="B1" s="1"/><c r="C1" s="1"/></row>',
+        );
+    });
+
+    it('writes no covered cell when there is no style to carry', () => {
+        // An empty cell under the default style is nothing at all, merged or
+        // not: the range in `<mergeCells>` is what says the sheet is merged.
+        assert.deepEqual(mergedRows([[{ v: 'T', colSpan: 3 }]]), [
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>T</t></is></c></row>',
+        ]);
+    });
+
+    it('covers the rows below with a rowSpan, and closes the range where it said', () => {
+        const merges = new MergeTable();
+        const rows = mergedRows(
+            [
+                [{ v: 'Fruta', s: { bold: true }, rowSpan: 3 }, 'manzana'],
+                [undefined, 'pera'],
+                [undefined, 'banana'],
+                ['otra cosa'],
+            ],
+            merges,
+        );
+        assert.ok(rows[0]?.startsWith('<row r="1"><c r="A1" t="inlineStr" s="1">'));
+        // The covered cells of the rows below carry the same style, and land
+        // ahead of the row's own — a row's cells go in column order.
+        assert.ok(rows[1]?.startsWith('<row r="2"><c r="A2" s="1"/><c r="B2"'));
+        assert.ok(rows[2]?.startsWith('<row r="3"><c r="A3" s="1"/><c r="B3"'));
+        assert.ok(rows[3]?.startsWith('<row r="4"><c r="A4" t="inlineStr">'));
+        assert.equal(merges.xml(), '<mergeCells count="1"><mergeCell ref="A1:A3"/></mergeCells>');
+    });
+
+    it('merges a block when a cell says both', () => {
+        const merges = new MergeTable();
+        const rows = mergedRows(
+            [
+                [{ v: 'B', s: { bold: true }, colSpan: 2, rowSpan: 2 }],
+                [undefined, undefined, 'x'],
+            ],
+            merges,
+        );
+        assert.ok(rows[0]?.endsWith('<c r="B1" s="1"/></row>'));
+        assert.ok(rows[1]?.startsWith('<row r="2"><c r="A2" s="1"/><c r="B2" s="1"/><c r="C2"'));
+        assert.equal(merges.xml(), '<mergeCells count="1"><mergeCell ref="A1:B2"/></mergeCells>');
+    });
+
+    it('writes the covered cells that come after the row has run out of its own', () => {
+        const rows = mergedRows([[undefined, { v: 'x', s: { bold: true }, rowSpan: 2 }], []]);
+        assert.equal(rows[1], '<row r="2"><c r="B2" s="1"/></row>');
+    });
+
+    it('takes a hole, a null or an empty styled cell under a merge', () => {
+        // A record read by the columns is where the last one comes from: a pk
+        // column hands over its fill whether the value is there or not.
+        const rows = mergedRows([
+            [{ v: 'x', rowSpan: 4 }],
+            [null],
+            [{ s: { bold: true } }],
+            [{ v: null, s: { bold: true } }],
+        ]);
+        assert.deepEqual(rows.slice(1), ['<row r="2"></row>', '<row r="3"></row>', '<row r="4"></row>']);
+    });
+
+    it('refuses a value in a column the same row already merged', () => {
+        assert.throws(
+            () => mergedRows([[{ v: 'T', colSpan: 3 }, 'x']]),
+            /Column B of row 1 is covered by the merge "A1:C1"/,
+        );
+    });
+
+    it('refuses a value in a column a merge above is still covering', () => {
+        assert.throws(
+            () => mergedRows([[{ v: 'x', rowSpan: 2 }], ['y']]),
+            /Column A of row 2 is covered by the merge "A1:A2"/,
+        );
+    });
+
+    it('refuses a formula under a merge, empty as the cell may look', () => {
+        assert.throws(
+            () => mergedRows([[{ v: 'T', colSpan: 2 }, { f: 'NOW()' }]]),
+            /is covered by the merge "A1:B1"/,
+        );
+    });
+
+    it('refuses two ranges that overlap', () => {
+        assert.throws(
+            () => mergedRows([[undefined, { v: 'x', rowSpan: 3 }], [{ v: 'y', colSpan: 3 }]]),
+            /The merge starting at A2 runs over "B1:B3", which is still open/,
+        );
+    });
+
+    it('refuses a span that is not a count of cells', () => {
+        assert.throws(() => mergedRows([[{ v: 'x', colSpan: 0 }]]), /"colSpan" is how many cells/);
+        assert.throws(() => mergedRows([[{ v: 'x', rowSpan: 1.5 }]]), /"rowSpan" is how many cells/);
+    });
+
+    it('merges nothing when a span is the cell itself', () => {
+        const merges = new MergeTable();
+        const [row] = mergedRows([[{ v: 'x', colSpan: 1, rowSpan: 1 }, 'y']], merges);
+        assert.equal(merges.xml(), '');
+        assert.ok(row?.includes('<c r="B1"'));
+    });
+
+    it('leaves a merged value out of the widths, and a rowSpan alone in them', () => {
+        // Excel's own autofit passes merged cells by: a title stretched over
+        // three columns is not how wide the first one has to be. A cell that
+        // only reaches down still has one column to be shown in.
+        const widths = new WidthMeter(50);
+        const merges = new MergeTable();
+        const styles = new StyleTable();
+        const types = new ValueTypes();
+        const row: CellRow = [
+            { v: 'un título muy largo', colSpan: 3 },
+            { v: 'abcd', col: 'D', rowSpan: 2 },
+        ];
+        cellRowXml(1, row, styles, types, undefined, widths, undefined, merges);
+        assert.deepEqual(
+            [...widths.columnWidths()],
+            [undefined, undefined, undefined, columnWidth(4)],
+        );
     });
 });
 

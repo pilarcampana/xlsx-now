@@ -2,7 +2,7 @@
 
 XLSX fast outputs — a streaming XLSX writer with real cell styles (fonts,
 fills, borders, alignment, number and date formats), formulas, column widths,
-a frozen header row and as many worksheets as the stream cares to open,
+merged cells, a frozen header row and as many worksheets as the stream cares to open,
 designed to run **unmodified in Node and in the browser**. The stream carries
 the workbook: rows, and the commands that open a sheet or spell a line out.
 
@@ -83,6 +83,13 @@ split in layers:
   `sheet.ts` to merge into the `<cols>` it was going to write anyway. It is
   the one thing here the writer cannot hand over as it goes — see
   [Columns sized by what they hold](#columns-sized-by-what-they-hold-autowidthmax).
+- **The merged ranges of a sheet.** `merges.ts` collects what the `colSpan`
+  and `rowSpan` of its cells add up to, and answers which columns of the row
+  being written a merge from an earlier row already took. It holds ranges and
+  nothing else, which is what makes merging free to stream: `<mergeCells>`
+  goes *after* `<sheetData>`, so the rows go out as they are written and the
+  ranges wait for the footer. See
+  [Merged cells](#merged-cells-colspan-and-rowspan).
 - **The commands, alongside the rows.** `command.ts` defines the messages that
   are not rows: `#worksheet`, which the writer turns into the end of one
   worksheet part and the start of the next, and `#line`, which is a row said
@@ -243,7 +250,8 @@ Rows can be as long or short as they happen to be; nothing has to line up.
 
 ### The cell that says more
 
-`{ v, s, f, t, col }`. Every field is optional, the value included.
+`{ v, s, f, t, col, colSpan, rowSpan }`. Every field is optional, the value
+included.
 
 | field | what it is |
 | --- | --- |
@@ -252,6 +260,8 @@ Rows can be as long or short as they happen to be; nothing has to line up.
 | `f` | the formula, with or without a leading `=` |
 | `t` | what the cell holds, as xlsx spells it — read off `v` when it is not said |
 | `col` | the column to write it in: `'J'`, or `10` for the same one |
+| `colSpan` | how many columns it takes, its own included |
+| `rowSpan` | how many rows it takes, its own included |
 
 ```js
 [
@@ -260,6 +270,7 @@ Rows can be as long or short as they happen to be; nothing has to line up.
     { v: 45, f: 'SUM(B2:B10)' },                   // a formula, and its result
     { v: '007', t: 'inlineStr' },                  // a code, not the number 7
     { v: 'Total', col: 'J' },                      // in J, not in the next one
+    { v: 'Ventas 2024', colSpan: 3 },              // merged across three columns
 ]
 ```
 
@@ -310,6 +321,73 @@ not seventy-eight:
 A line only moves forward. A `col` pointing at a column the line has already
 written, or already gone past, is refused — two cells in one column is a file
 Excel opens as one of them, and which one is nobody's decision to leave to it.
+
+### Merged cells: `colSpan` and `rowSpan`
+
+Two counts on the cell, its own included. `colSpan: 3` merges it with the two
+to its right, `rowSpan: 3` with the two below it, and together they are a
+block:
+
+```js
+[{ v: 'Ventas 2024', colSpan: 3 }, undefined, undefined, { v: 'Total' }]
+[{ v: 'Fruta', rowSpan: 3 }, 'manzana']
+[undefined, 'pera']
+[undefined, 'banana']
+```
+
+The merge is declared **on the cell** and not as a range on the sheet, which
+is what a stream leaves room for: `{ '!merges': ['A1:C1'] }` needs a row
+number, and the caller of a stream does not know which row a title is about to
+land on. The writer does, so the count is the caller's and the range is the
+writer's.
+
+**The sheet stays a grid.** A merge takes its place in it rather than pushing
+anything along: the columns it covers are still their own columns, and the row
+underneath a `rowSpan` still counts from A. So a covered position has to be
+left empty — a hole, a `null`, an empty cell — and anything else is refused by
+name:
+
+```
+Column B of row 1 is covered by the merge "A1:C1": a merged range shows the
+value of its first cell, so the rest of it has to be left empty.
+```
+
+That is the format's own answer, not a rule invented here. A merge in xlsx is
+a range in `<mergeCells>`; the cells it covers go on existing in
+`<sheetData>` at their own coordinates, and a value left in one of them stays
+in the file, invisible, until someone unmerges the range. Excel says as much
+when you merge from the UI — *"only the upper-left value will be kept"* — and
+drops the rest. Dropping it silently is the one thing this writer will not do.
+
+Nothing forces the holes, though: a `col` reaches past a merge in one step,
+which reads better than counting `undefined`s.
+
+```js
+[{ v: 'Ventas 2024', colSpan: 3 }, { v: 'Total', col: 'D' }]
+```
+
+**The style of a merge is the style of the cell that declared it**, and every
+cell of the range is written carrying it. This is not a nicety: xlsx has no
+border around a range, only borders around cells, so a box drawn on the first
+cell alone comes out as a box around that cell. The covered cells are written
+empty and styled, which is what Excel's own files carry — and, under the
+default style, an empty cell is nothing at all and costs nothing.
+
+**What a merge does not take part in.** A value shown across several columns
+measures none of them, so a cell with a `colSpan` is left out of
+[`autoWidthMax`](#columns-sized-by-what-they-hold-autowidthmax) — Excel's own
+autofit passes merged cells by too, and a title stretched over three columns
+is not how wide the first one has to be. A `rowSpan` alone still has one
+column to be shown in, and is measured.
+
+**Two ranges that overlap** are a file Excel repairs rather than opens, and it
+repairs it by dropping things, so they are refused here. So is a `rowSpan`
+that reaches past the last row of its sheet: it is a range with nothing under
+it, and a row the caller meant to write and did not.
+
+The ranges themselves are the one thing a sheet holds on to until it closes —
+`<mergeCells>` comes after `<sheetData>`, so nothing is buffered but a short
+string per merge, and the rows stream out as they always did.
 
 ### Styles
 
@@ -1234,9 +1312,11 @@ columns — fails the freeze check.
 - **Shared formulas and array formulas.** A cell's `f` is its own; the
   `shared`/`array` forms, where one expression covers a range, are not
   emitted. Nothing about them is ruled out by the design.
-- **Merged cells, conditional formats, data validation, charts.** All of them
-  are further parts or further elements of the worksheet, and none is
-  attempted here.
+- **Conditional formats, data validation, charts.** All of them are further
+  parts or further elements of the worksheet, and none is attempted here.
+  [Merged cells](#merged-cells-colspan-and-rowspan) were the one of these that
+  fit as it stood: `<mergeCells>` goes after `<sheetData>`, so a range can be
+  collected while the rows stream out.
 - **Confirmation in Excel itself.** The container is now shaped the way Office
   documents it wants (ZIP 2.0, deflate), and the files read back correctly
   under `yauzl` and `exceljs` — and a two-sheet file converts cleanly through
