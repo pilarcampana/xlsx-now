@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { createFileWritable, writeXlsxFile } from '../src/node/index.js';
+import { createFileWritable, openXlsxFile, readXlsxFile, writeXlsxFile } from '../src/node/index.js';
 import { createXlsxStream } from '../src/core/createXlsxStream.js';
 import type { CellRow, Column } from '../src/core/types.js';
 import { readXlsx, sheetRows } from './helpers/zip.js';
@@ -65,6 +65,87 @@ describe('the Node face', () => {
             const bytes = await readFile(path);
             assert.ok(bytes.length > 1024 * 1024, `only ${bytes.length} bytes`);
             assert.equal(sheetRows((await readXlsx(bytes)).sheet).length, 20000);
+        });
+    });
+
+    describe('readXlsxFile', () => {
+        it('reads back the file writeXlsxFile left on disk', async () => {
+            const path = join(dir, 'people.xlsx');
+            await writeXlsxFile(path, {
+                sheetName: 'Gente',
+                columns: COLUMNS,
+                rows: [
+                    { id: 1, name: 'Ana' },
+                    { id: 2, name: 'Beto' },
+                ],
+            });
+
+            const [sheet] = await readXlsxFile(path);
+            assert.equal(sheet?.name, 'Gente');
+            assert.deepEqual(sheet?.cells, [
+                ['id', 'name'],
+                [1, 'Ana'],
+                [2, 'Beto'],
+            ]);
+        });
+
+        it('takes the mode, the same as the reader under it', async () => {
+            const path = join(dir, 'formato.xlsx');
+            await writeXlsxFile(path, { rows: [[{ v: 1234.5, s: { numFmt: '#,##0.00' } }]] });
+            const [sheet] = await readXlsxFile(path, { mode: 'cells' });
+            assert.deepEqual(sheet?.cells[0]?.[0], { v: 1234.5, s: { numFmt: '#,##0.00' } });
+        });
+
+        it('says which file it could not open', async () => {
+            await assert.rejects(readXlsxFile(join(dir, 'no-existe.xlsx')), /no-existe\.xlsx/);
+        });
+    });
+
+    describe('openXlsxFile', () => {
+        it('walks the rows without reading the file into memory', async () => {
+            const path = join(dir, 'grande.xlsx');
+            const rows = Array.from({ length: 5000 }, (_row, index) => [
+                index,
+                'a fairly long value, repeated so the file gets past a few buffers',
+            ]);
+            await writeXlsxFile(path, { rows });
+
+            const workbook = await openXlsxFile(path);
+            try {
+                let count = 0;
+                let last: unknown;
+                for await (const row of workbook.sheets[0]?.rows() ?? []) {
+                    count++;
+                    last = row.cells[0];
+                }
+                assert.equal(count, 5000);
+                assert.equal(last, 4999);
+            } finally {
+                await workbook.close();
+            }
+        });
+
+        it('stops where the caller stops', async () => {
+            const path = join(dir, 'corta.xlsx');
+            await writeXlsxFile(path, {
+                rows: Array.from({ length: 1000 }, (_row, index) => [index]),
+            });
+
+            const workbook = await openXlsxFile(path);
+            try {
+                for await (const row of workbook.sheets[0]?.rows() ?? []) {
+                    assert.equal(row.cells[0], 0);
+                    break;
+                }
+            } finally {
+                await workbook.close();
+            }
+        });
+
+        it('leaves no file open behind a package that does not read', async () => {
+            const path = join(dir, 'no-es-xlsx.xlsx');
+            await writeFile(path, 'esto no es un zip');
+            await assert.rejects(openXlsxFile(path), /not a zip archive/);
         });
     });
 

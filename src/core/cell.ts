@@ -7,6 +7,32 @@ const MS_PER_DAY = 86400000;
 const MS_PER_MINUTE = 60000;
 
 /**
+ * The serial Excel gives to a day that never happened.
+ *
+ * Lotus 1-2-3 took 1900 for a leap year, Excel copied the bug on purpose to
+ * stay compatible with it, and every spreadsheet since carries it: serial 60
+ * is 29/02/1900, a date the Gregorian calendar does not have. Everything from
+ * 01/03/1900 on is numbered one higher than a straight count of days would
+ * make it, and everything before it is numbered as the count says.
+ *
+ * So the arithmetic above — days since 1899-12-30 — is right for one side of
+ * that day and one short on the other, which is what these two constants are
+ * for. The correction is a single comparison in each direction; the day
+ * itself is the part with no answer, since there is no `Date` for it.
+ */
+const PHANTOM_LEAP_DAY_SERIAL = 60;
+/** First serial the plain day count already agrees with: 01/03/1900. */
+const FIRST_UNSHIFTED_SERIAL = 61;
+/**
+ * The lowest serial a cell can hold. Zero is Excel's own "day 0", which is
+ * how a time of day with no date is stored — `0.4375` is half past ten in the
+ * morning and nothing else — so it is a value to keep, not one to refuse.
+ * Below it there is nothing: a negative serial is a date Excel has no
+ * numbering for and shows as `######`.
+ */
+const MIN_SERIAL = 0;
+
+/**
  * The characters XML 1.0 has no place for — §2.2 leaves them out of `Char`
  * altogether, so there is no spelling of them a parser will read back: not as
  * themselves, and not as the `&#0;` a numeric reference would be either.
@@ -92,7 +118,66 @@ export function columnIndex(letters: string): number | undefined {
  */
 export function excelSerial(value: Date): number {
     const local = value.getTime() - value.getTimezoneOffset() * MS_PER_MINUTE;
-    return local / MS_PER_DAY + EXCEL_EPOCH_OFFSET_DAYS;
+    const days = local / MS_PER_DAY + EXCEL_EPOCH_OFFSET_DAYS;
+    // Days counted from 1899-12-30, which is the numbering Excel uses from
+    // 01/03/1900 on. Before that its own count is one lower, because of the
+    // 29/02/1900 it has and the calendar does not.
+    const serial = days < FIRST_UNSHIFTED_SERIAL ? days - 1 : days;
+    if (!(serial >= MIN_SERIAL)) {
+        // `!(x >= 0)` and not `x < 0`, so a `NaN` — an invalid `Date` — is
+        // caught here too rather than written out as `NaN` in a `<v>`.
+        throw new RangeError(
+            `${value.toISOString?.() ?? String(value)} cannot be written to a sheet: ` +
+                'a spreadsheet numbers its days from 31/12/1899, and there is no serial for anything before that.',
+        );
+    }
+    return serial;
+}
+
+/**
+ * The serial number a sheet stores, back as a `Date` — `excelSerial` the
+ * other way round, and the reader's whole answer to what a date is.
+ *
+ * The wall clock is kept the same way it was written: the serial says
+ * `2024-01-15 00:00` and the `Date` that comes back reads `2024-01-15 00:00`
+ * to whoever asks it, wherever they are. A serial under `1` carries a time of
+ * day and no meaningful date, and it lands on 31/12/1899 — the day
+ * `excelSerial` sends it back from, so a time survives the round trip.
+ *
+ * The one serial with no answer is 60, [the day Excel has and the calendar
+ * does not](https://learn.microsoft.com/office/troubleshoot/excel/wrongly-assumes-1900-is-leap-year):
+ * there is no `Date` for 29/02/1900, and the two candidates on either side of
+ * it are dates of their own that a file can hold separately. Giving one of
+ * them back would make two different serials read as the same day, so it is
+ * refused instead.
+ */
+export function fromExcelSerial(serial: number): Date {
+    if (serial >= PHANTOM_LEAP_DAY_SERIAL && serial < FIRST_UNSHIFTED_SERIAL) {
+        throw new RangeError(
+            `Serial ${serial} is 29/02/1900, a day this spreadsheet format has and the calendar does not.`,
+        );
+    }
+    if (!(serial >= MIN_SERIAL)) {
+        throw new RangeError(`Serial ${serial} is not a date: a sheet numbers its days from 0.`);
+    }
+    const days = serial < PHANTOM_LEAP_DAY_SERIAL ? serial + 1 : serial;
+    // Rounded to the millisecond, because that is as fine as a `Date` gets
+    // and a serial is a fraction of a day: half past twelve is
+    // `45306.520833333336`, and taken at face value it comes back a
+    // millisecond short of the half hour it went in as.
+    const local = Math.round((days - EXCEL_EPOCH_OFFSET_DAYS) * MS_PER_DAY);
+    // `local` is the wall clock read as if it were UTC, and the instant that
+    // shows that wall clock is it plus whatever the zone's offset is *at that
+    // instant* — which is what makes this a fixed point rather than a sum:
+    // the offset depends on the date it is being applied to.
+    //
+    // The first guess reads the offset up to fourteen hours away from the
+    // right instant, which only matters near a daylight saving change; the
+    // second reads it within an hour, which settles every case except the
+    // hour a zone skips over — and that one is a wall clock that never
+    // happened, so it has no exact answer to arrive at.
+    const guess = new Date(local + new Date(local).getTimezoneOffset() * MS_PER_MINUTE);
+    return new Date(local + guess.getTimezoneOffset() * MS_PER_MINUTE);
 }
 
 /** Whether a `Date` says anything past the day — what decides its format. */

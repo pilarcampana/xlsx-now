@@ -6,6 +6,10 @@ merged cells, a frozen header row and as many worksheets as the stream cares to 
 designed to run **unmodified in Node and in the browser**. The stream carries
 the workbook: rows, and the commands that open a sheet or spell a line out.
 
+It [reads them back](#reading-a-workbook) too, and only the data: an array of
+arrays per sheet, or the same cells the writer takes — so a workbook can go
+in one side, be changed, and come out the other.
+
 ## Why not just fork `xlsx-write-stream`?
 
 We evaluated [`xlsx-write-stream`](https://www.npmjs.com/package/xlsx-write-stream)
@@ -104,6 +108,13 @@ split in layers:
   whatever `fflate` produces straight to a sink. Both sides are push-based, so
   there is no queue in between. Every byte of the archive format — local
   headers, CRCs, data descriptors, central directory — is written by `fflate`.
+- **The reader, in `read/`.** The mirror image of all of the above, and it is
+  shaped differently for a reason the format imposes: it seeks. `zipReader.ts`
+  reads the central directory and inflates any entry by name, `workbook.ts`
+  follows the relationships to the parts, and `worksheet.ts` turns the chunks
+  of a sheet into rows as they go past. See
+  [Reading a workbook](#reading-a-workbook), and
+  [why it cannot be a single pass](#why-the-reader-cannot-be-a-single-pass).
 
 Both halves are pure JS with no `fs`, `zlib` or DOM anywhere, which is what
 proves the isomorphism claim: the same `src/core` files, byte-for-byte, ran in
@@ -115,13 +126,14 @@ environment, and ships as its own entry point:
 
 | module | contents |
 | --- | --- |
-| `xlsx-now` (`src/core`) | `XlsxStream`, `createXlsxStream`, `XlsxWriter`, the types — runs in both |
-| `xlsx-now/node` (`src/node`) | `createFileWritable`, `writeXlsxFile` |
-| `xlsx-now/browser` (`src/browser`) | `downloadXlsx`, `createXlsxBlob` |
+| `xlsx-now` (`src/core`) | `XlsxStream`, `createXlsxStream`, `XlsxWriter`, `readXlsx`, `openXlsx`, the types — runs in both |
+| `xlsx-now/node` (`src/node`) | `createFileWritable`, `writeXlsxFile`, `readXlsxFile`, `openXlsxFile` |
+| `xlsx-now/browser` (`src/browser`) | `downloadXlsx`, `createXlsxBlob`, `blobAccess` |
 
-Neither of those two contains a writer: they only supply the *destination*
-the standard has no answer for on that platform — a file on Node, the save
-dialog or a `Blob` in the browser.
+Neither of those two contains a writer or a reader: they only supply the
+*destination* the standard has no answer for on that platform — a file on
+Node, the save dialog or a `Blob` in the browser — and, going the other way,
+the *source*: a file read positionally, or a `Blob` read by slices.
 
 ## The zip container
 
@@ -1082,6 +1094,173 @@ It has to be called from a user gesture, since the File System Access API
 opens a native save dialog. `createXlsxBlob(options)` is there for when the
 `Blob` itself is what's wanted.
 
+## Reading a workbook
+
+The other direction, and only the data: values, dates, formulas and number
+formats. Fonts, fills, borders, column widths, merges, charts and everything
+else a file can carry are not read.
+
+```js
+import { readXlsx } from 'xlsx-now';
+
+const sheets = await readXlsx(bytes);
+sheets[0].name        // 'Ventas'
+sheets[0].cells       // [['fecha', 'importe'], [Date, 1234.5], ...]
+sheets[0].maxRow      // 2
+sheets[0].maxCol      // 2
+```
+
+Every sheet comes back, in the order the workbook declares them, and each one
+is a `{ name, cells, maxCol, maxRow }`. The grid is **dense in rows** — there
+is an entry for every row up to the last one that holds anything, and a row
+that holds nothing is an empty array — and **ragged in columns**: each row
+ends at its own last cell, and `maxCol` says how wide the sheet is as a whole.
+A position with no cell in it is `undefined`; a cell that is there and empty
+is `null`. The same difference the writer makes on the way in.
+
+### The two modes
+
+`values` is the default and gives the value alone. `cells` gives the
+`StyledCell` the writer takes:
+
+```js
+const [sheet] = await readXlsx(bytes, { mode: 'cells' });
+sheet.cells[1][1]     // { v: 1234.5, s: { numFmt: '#,##0.00' } }
+sheet.cells[1][0]     // { v: 2024-01-15T00:00:00, s: { numFmt: 14 } }
+sheet.cells[2][1]     // { v: 3, f: 'SUM(B2:B3)' }
+```
+
+Which is the point of that mode: what comes out of reading goes straight back
+into writing. The number format is under `s` rather than in a field of its
+own precisely because that is where the writer reads one — the code itself for
+a format the workbook declared, the id for a built-in one — so a workbook can
+be read, changed and written again without anything in the middle knowing what
+a number format is. `t` is only set where the writer would not work it out on
+its own: the cached string result of a formula, and an error.
+
+### Dates, and the day that never was
+
+A date in a sheet is a number; the only thing that makes it a date is the
+number format its style points at. So the reader parses `styles.xml` — the one
+part of the styling it does read — for exactly two questions: which format
+each style shows, and whether that format writes a date. A number under one
+comes back as a `Date`, and the same number under a plain format stays a
+number.
+
+The wall clock is what survives, not the instant: a cell that reads
+`15/01/2024 00:00` gives a `Date` that reads `15/01/2024 00:00` wherever it is
+read, the same way the writer writes one.
+
+Two epochs and one bug are handled. `date1904`, which a workbook that came
+from a Macintosh Excel still declares, shifts every serial by 1462 days. And
+[the 29th of February of 1900](https://learn.microsoft.com/office/troubleshoot/excel/wrongly-assumes-1900-is-leap-year),
+a day Lotus 1-2-3 invented and Excel copied on purpose, which makes every
+serial from the 1st of March of 1900 on one higher than a plain count of days.
+Both directions know about it. The one serial with no answer is 60 — the
+phantom day itself — and it is refused rather than given one of its
+neighbours, which would make two different serials read as the same date.
+
+### Where the bytes come from
+
+`readXlsx` takes a `Uint8Array`, and on both platforms there is a way to hand
+it the file without holding all of it:
+
+```js
+import { readXlsxFile, openXlsxFile } from 'xlsx-now/node';
+const sheets = await readXlsxFile('ventas.xlsx');
+
+import { blobAccess } from 'xlsx-now/browser';
+const sheets = await readXlsx(blobAccess(input.files[0]));
+```
+
+`blobAccess` slices the `Blob`, so a `File` the user picked is read off disk
+rather than loaded; `openXlsxFile` reads positionally from a file handle.
+Both are the same one-method interface — `read(offset, length)` — which is all
+the reader ever asks of a source.
+
+### Rows without the grid
+
+Underneath `readXlsx` there is `openXlsx`, which opens the package, reads
+everything except the rows, and hands back a sheet whose rows are walked with
+`for await`. Nothing is held between two of them, which is what a sheet bigger
+than memory needs — and what makes read-transform-write a pipe rather than
+three steps:
+
+```js
+const workbook = await openXlsxFile('grande.xlsx');
+try {
+    for await (const row of workbook.sheets[0].rows()) {
+        // row.index is the number the sheet gives it, counting from 1
+        // row.cells is the row, by column, counting from 0
+    }
+} finally {
+    await workbook.close();
+}
+```
+
+The sheets are named before a single row is read, and any of them can be read
+on its own and in any order.
+
+### Why the reader cannot be a single pass
+
+The writer streams because it decides its own order. Reading has no such
+freedom, and it is worth spelling out why, because it is the one thing about
+the format that decides the shape of everything above it.
+
+A zip is addressed through the central directory **at the end** of the file,
+and an OOXML package addresses its parts by name through the relationships —
+so the order the entries happen to be in means nothing at all. This is not
+theoretical. A file written by `exceljs` carries its parts in this order:
+
+```
+[Content_Types].xml
+xl/_rels/workbook.xml.rels
+xl/worksheets/sheet1.xml      <- the sheet
+xl/sharedStrings.xml          <- the strings its cells point at, after it
+xl/styles.xml                 <- the formats that say which numbers are dates
+xl/workbook.xml               <- the names of the sheets, last of all
+```
+
+A forward-only pass reaches the worksheet before it knows what the sheet is
+called, which strings its cells mean, or which of its numbers are dates. So
+the container layer seeks, and it is the only layer that does; everything
+above it works in terms of named parts. What *is* incremental is the part that
+can be big: the worksheet is inflated 64 KB at a time and parsed as it goes.
+
+The honest limit of how little a reader can hold is the shared string table,
+and it is the format's doing: a cell says `<v>7</v>` and means the seventh
+entry of a table it does not carry.
+
+### The XML
+
+`saxes` — a real XML parser, pulled in for the reading side and used nowhere
+else. Writing XML is a matter of putting the right characters in the right
+order, which is why this package does that by hand; reading it is entities,
+numeric references, attribute quoting, text split across chunk boundaries and
+everything a producer is allowed to write that nobody expects. That is a
+solved problem, and hand-rolling it would have meant owning bugs that are
+already fixed somewhere else.
+
+It is treated exactly like `fflate`: a dependency the consumer resolves, never
+inlined into a bundle this package ships. See
+[the note below](#typescript-no-bundler-on-the-main-path) for what that means
+for a page with no build step, since `saxes` publishes CommonJS only.
+
+### What the reader does not read
+
+- **Anything about how a cell looks** except its number format. Fonts, fills,
+  borders and alignment are in `styles.xml` and are not parsed; the runs of a
+  rich-text string come back joined, without their formatting.
+- **Merged ranges, column widths, freezes, hidden rows.** All of them are
+  there in the parts and none is collected.
+- **The `f` of a shared formula's followers.** One `<f>` covers a range and
+  only the cell that declares it carries the text; the others have the cached
+  value and no expression. `values` mode is unaffected — the value is on
+  every cell.
+- **ZIP64 archives**, which is to say files above 4 GB. Detected and refused
+  rather than misread.
+- **Encrypted workbooks**, `.xls` (the pre-2007 binary format) and `.xlsb`.
+
 ## Compression benchmark
 
 [`examples/node/benchmark.ts`](examples/node/benchmark.ts) writes the same
@@ -1116,16 +1295,35 @@ than the TypeScript sources.
 `tsconfig.json` uses `module: NodeNext`, so relative imports carry their
 `.js` extension in both source and output and the emitted ESM in `dist/`
 loads unchanged in Node **and** straight from a `<script type="module">` in
-the browser. The one specifier a browser can't resolve on its own —
-the bare `fflate` — is mapped by an
-[import map](examples/browser/index.html) instead of a build step.
+the browser. The bare specifiers a browser can't resolve on its own are
+mapped by an [import map](examples/browser/index.html) instead of a build
+step — which covers `fflate`, whose ESM build is a file an import map can
+point at.
+
+`saxes`, which only the reader uses, is the one that does not fit that:
+it publishes CommonJS and nothing else, so a page with no build step cannot
+resolve it the way it resolves `fflate`. What that costs, exactly:
+
+- **The writing side is unaffected.** `src/browser/index.ts` never reaches
+  the reader at runtime, so the browser example still loads with the import
+  map it always had.
+- **The reading side in a browser needs the dependency resolved** — by a
+  bundler, by a CommonJS-capable loader, or by an import map pointing at an
+  ESM build of `saxes` from somewhere.
+
+This package resolves it for nobody, which is the deliberate part: no build
+here inlines a third-party library into what it ships, the ESM leaves the
+specifier bare and the UMD leaves it external, exactly as it does with
+`fflate`. What to assemble it with is the consumer's decision, not this
+package's.
 
 The public surface is `src/core/index.ts`, which exports `XlsxWriter`,
-`XlsxStream` and `createXlsxStream` plus the types callers need (`Column`,
-`Row`, `CellValue`, `SheetInput`, `WorksheetCommand`, `LineCommand`,
-`XlsxSheet`, `RowOptions`, `CompressionLevel`) and the `WORKSHEET` and `LINE` keys
-themselves, with the environment-specific faces under `src/node/index.ts` and
-`src/browser/index.ts`.
+`XlsxStream` and `createXlsxStream` for writing, `readXlsx` and `openXlsx`
+for reading, plus the types callers need (`Column`, `Row`, `CellValue`,
+`SheetInput`, `WorksheetCommand`, `LineCommand`, `XlsxSheet`, `RowOptions`,
+`CompressionLevel`, `SheetData`, `ReadValue`, `ReadRow`) and the `WORKSHEET`
+and `LINE` keys themselves, with the environment-specific faces under
+`src/node/index.ts` and `src/browser/index.ts`.
 
 ```sh
 npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundle
@@ -1346,8 +1544,10 @@ columns — fails the freeze check.
   suite in a real browser is the second stage. Until then, the closest thing
   is `npm run example:browser:test`, which drives the example page through
   Chromium.
-- **Reading `.xlsx`.** Not attempted — this is a well-solved problem
-  (SheetJS, `exceljs`); no reason to build it from scratch here.
+- **Reading anything but the data.** [The reader](#reading-a-workbook) gives
+  back values, dates, formulas and number formats, and that is all: what a
+  cell looks like, what a sheet merges and how wide its columns are stay in
+  the file. See [what it does not read](#what-the-reader-does-not-read).
 - **True OS-level streaming download in the browser without File System
   Access API.** Firefox/Safari don't support `showSaveFilePicker`, so on
   those the current fallback still generates incrementally but has to
@@ -1359,7 +1559,9 @@ columns — fails the freeze check.
   types to write them against and test them.
 - **Shared formulas and array formulas.** A cell's `f` is its own; the
   `shared`/`array` forms, where one expression covers a range, are not
-  emitted. Nothing about them is ruled out by the design.
+  emitted. Nothing about them is ruled out by the design. Reading one back is
+  the same gap seen from the other side: the followers of a shared formula
+  come back with their value and without an `f`.
 - **Conditional formats, data validation, charts.** All of them are further
   parts or further elements of the worksheet, and none is attempted here.
   [Merged cells](#merged-cells-colspan-and-rowspan) were the one of these that

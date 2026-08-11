@@ -48,16 +48,20 @@ export default [
         // the host provides, exactly like the ESM build does — nothing is
         // inlined, and no copy of a third-party library is duplicated into this
         // file.
-        external: ['fflate'],
+        external: ['fflate', 'saxes'],
         output: {
             file: 'dist/umd/xlsx-now.umd.js',
             format: 'umd',
             name: 'xlsxNow',
             sourcemap: true,
-            // Name of the external under a plain <script> tag: fflate's own UMD
-            // build publishes itself as the `fflate` global, so it has to be
-            // loaded before this bundle.
-            globals: { fflate: 'fflate' },
+            // Name of each external under a plain <script> tag: fflate's own
+            // UMD build publishes itself as the `fflate` global, so it has to
+            // be loaded before this bundle. `saxes` — which only the reader
+            // uses — publishes no build of its own for a script tag, so under
+            // one it is up to the page to leave a `saxes` global behind;
+            // required from CommonJS or AMD, which is how it is meant to be
+            // consumed, the name resolves on its own.
+            globals: { fflate: 'fflate', saxes: 'saxes' },
         },
         plugins: [commonjsMarker],
     },

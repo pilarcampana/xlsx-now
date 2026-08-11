@@ -4,7 +4,8 @@
 // stage, and `npm run example:browser:test` already drives the example page
 // through Chromium.
 import assert from 'node:assert/strict';
-import { createXlsxBlob, downloadXlsx } from '../src/browser/index.js';
+import { blobAccess, createXlsxBlob, downloadXlsx } from '../src/browser/index.js';
+import { readXlsx as readXlsxFrom } from '../src/core/read/readXlsx.js';
 import type { Column } from '../src/core/types.js';
 import { stubDom, type DomStub } from './helpers/dom.js';
 import { readXlsx, sheetRows } from './helpers/zip.js';
@@ -80,5 +81,28 @@ describe('downloadXlsx', () => {
 
         await assert.rejects(downloadXlsx('people.xlsx', { rows: [['a']] }), /detached document/);
         assert.equal(dom.revokedUrls.length, 1);
+    });
+});
+
+describe('blobAccess', () => {
+    it('reads a workbook out of a Blob, which is how one arrives in a browser', async () => {
+        const blob = await createXlsxBlob({ sheetName: 'Datos', rows: [['a', 1], ['b', 2]] });
+        const [sheet] = await readXlsxFrom(blobAccess(blob));
+        assert.equal(sheet?.name, 'Datos');
+        assert.deepEqual(sheet?.cells, [
+            ['a', 1],
+            ['b', 2],
+        ]);
+    });
+
+    it('reads only the slice it was asked for', async () => {
+        const blob = new Blob(['0123456789']);
+        const access = blobAccess(blob);
+        assert.equal(access.size, 10);
+        assert.deepEqual([...(await access.read(3, 4))], [...new TextEncoder().encode('3456')]);
+    });
+
+    it('refuses to answer short for a read past the end', async () => {
+        await assert.rejects(blobAccess(new Blob(['abc'])).read(1, 10), /ends after/);
     });
 });

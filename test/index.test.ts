@@ -39,6 +39,12 @@ describe('the public surface', () => {
         assert.equal(typeof core.shownWidth, 'function');
     });
 
+    it('exports the reader, and the way to hand it something to seek in', () => {
+        assert.equal(typeof core.readXlsx, 'function');
+        assert.equal(typeof core.openXlsx, 'function');
+        assert.equal(typeof core.bytesAccess, 'function');
+    });
+
     it('exports nothing else', () => {
         assert.deepEqual(Object.keys(core).sort(), [
             'DEFAULT_COMPRESSION_LEVEL',
@@ -53,11 +59,14 @@ describe('the public surface', () => {
             'ZipWriter',
             'argb',
             'bigintValue',
+            'bytesAccess',
             'createXlsxStream',
             'dateValue',
             'defaultTypes',
             'isLineCommand',
             'isWorksheetCommand',
+            'openXlsx',
+            'readXlsx',
             'shownWidth',
             'urlValue',
             'withType',
