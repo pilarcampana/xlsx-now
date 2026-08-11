@@ -161,7 +161,11 @@ export function fromExcelSerial(serial: number): Date {
         throw new RangeError(`Serial ${serial} is not a date: a sheet numbers its days from 0.`);
     }
     const days = serial < PHANTOM_LEAP_DAY_SERIAL ? serial + 1 : serial;
-    const local = (days - EXCEL_EPOCH_OFFSET_DAYS) * MS_PER_DAY;
+    // Rounded to the millisecond, because that is as fine as a `Date` gets
+    // and a serial is a fraction of a day: half past twelve is
+    // `45306.520833333336`, and taken at face value it comes back a
+    // millisecond short of the half hour it went in as.
+    const local = Math.round((days - EXCEL_EPOCH_OFFSET_DAYS) * MS_PER_DAY);
     // `local` is the wall clock read as if it were UTC, and the instant that
     // shows that wall clock is it plus whatever the zone's offset is *at that
     // instant* — which is what makes this a fixed point rather than a sum:

@@ -55,3 +55,13 @@ export type {
     Row,
     StyledCell,
 } from './types.js';
+export {
+    openXlsx,
+    readXlsx,
+    type ReadOptions,
+    type XlsxReader,
+    type XlsxSheetReader,
+    type XlsxSource,
+} from './read/readXlsx.js';
+export { bytesAccess, type RandomAccess } from './read/randomAccess.js';
+export type { ReadMode, ReadModes, ReadRow, ReadValue, SheetData } from './read/types.js';

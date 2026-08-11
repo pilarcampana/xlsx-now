@@ -55,7 +55,8 @@
     "example:umd:browser:test": "npm run build && PAGE_PATH=/examples/umd/index.html OUT_FILE=out/example-umd-browser.xlsx node dist/examples/browser/run-in-chromium-test.js"
   },
   "dependencies": {
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "saxes": "^6.0.0"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

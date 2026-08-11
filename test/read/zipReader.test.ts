@@ -93,7 +93,32 @@ describe('readEntry', () => {
     });
 });
 
+describe('bytesAccess', () => {
+    it('refuses a read that would go past the end', async () => {
+        const access = bytesAccess(new Uint8Array(10));
+        await assert.rejects(access.read(5, 10), RangeError);
+        await assert.rejects(access.read(-1, 2), RangeError);
+    });
+});
+
 describe('entryChunks', () => {
+    it('refuses an entry compressed with a method it does not read', async () => {
+        const access = bytesAccess(archive({ 'a.txt': 'hola' }));
+        const entry = { ...(await readCentralDirectory(access)).get('a.txt')!, method: 99 };
+        await assert.rejects(readEntry(access, entry), /method 99/);
+    });
+
+    it('refuses an entry that is not where the directory says it is', async () => {
+        const bytes = archive({ 'a.txt': 'hola' });
+        // The first entry starts at byte 0, so this is its signature.
+        bytes[0] = 0;
+        const access = bytesAccess(bytes);
+        const entry = (await readCentralDirectory(access)).get('a.txt')!;
+        await assert.rejects(readEntry(access, entry), /local file header/);
+    });
+});
+
+describe('entryChunks: what it hands out', () => {
     it('hands the bytes out as it inflates, not in one piece at the end', async () => {
         // Text deflate can do little with, so that what goes *in* is bigger
         // than one read: `COMPRESSIBLE` repeated would shrink to a few

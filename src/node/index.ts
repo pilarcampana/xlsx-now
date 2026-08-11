@@ -4,7 +4,11 @@
 // one thing the standard has no answer for in Node — a file as a destination
 // — and the convenience wrapper built on it.
 import { createWriteStream } from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { createXlsxStream, type CreateXlsxStreamOptions } from '../core/createXlsxStream.js';
+import type { RandomAccess } from '../core/read/randomAccess.js';
+import { openXlsx, type ReadOptions, type XlsxReader } from '../core/read/readXlsx.js';
+import type { ReadMode, ReadModes, SheetData } from '../core/read/types.js';
 
 /**
  * A file as a Web `WritableStream<Uint8Array>`, to close a `pipeTo`.
@@ -82,4 +86,86 @@ export async function writeXlsxFile(
     options: CreateXlsxStreamOptions,
 ): Promise<void> {
     await createXlsxStream(options).pipeTo(createFileWritable(path));
+}
+
+/**
+ * An open file as something the reader can seek in.
+ *
+ * This is the whole of what Node has to add to the reader, and it is what
+ * makes the reading side keep the promise the writing side makes: a file goes
+ * through without ever being in memory whole. The reader asks for the parts
+ * it needs, where they are, and a worksheet goes past 64 KB at a time.
+ */
+function fileAccess(file: FileHandle, size: number): RandomAccess {
+    return {
+        size,
+        async read(offset: number, length: number): Promise<Uint8Array> {
+            const bytes = new Uint8Array(length);
+            const { bytesRead } = await file.read(bytes, 0, length, offset);
+            if (bytesRead !== length) {
+                // A short read here is a file that ended where the archive
+                // says it does not — truncated, or being written into while
+                // it is read — and carrying on with the zeroes that are left
+                // in the buffer would read that as data.
+                throw new Error(
+                    `The file ended after ${bytesRead} of the ${length} bytes the archive points at from ${offset}.`,
+                );
+            }
+            return bytes;
+        },
+    };
+}
+
+/** An open workbook, and the file it is being read out of. */
+export interface XlsxFileReader<C> extends XlsxReader<C> {
+    /** Closes the file. The sheets cannot be read after it. */
+    close(): Promise<void>;
+}
+
+/**
+ * Opens a workbook file: reads everything except the rows.
+ *
+ * The one to reach for when the rows are not all wanted at once — a sheet
+ * bigger than memory, or a run that stops at the first row that matters.
+ * Whoever opens it closes it.
+ *
+ * ```js
+ * const workbook = await openXlsxFile('ventas.xlsx');
+ * try {
+ *     for await (const row of workbook.sheets[0].rows()) console.log(row.cells);
+ * } finally {
+ *     await workbook.close();
+ * }
+ * ```
+ */
+export async function openXlsxFile<M extends ReadMode = 'values'>(
+    path: string,
+    options: ReadOptions<M> = {},
+): Promise<XlsxFileReader<ReadModes[M]>> {
+    const file = await open(path);
+    try {
+        const { size } = await file.stat();
+        const reader = await openXlsx(fileAccess(file, size), options);
+        return { sheets: reader.sheets, close: () => file.close() };
+    } catch (err) {
+        // The handle is this function's until it is handed over, and a
+        // package that fails to open would leave it behind.
+        await file.close();
+        throw err;
+    }
+}
+
+/** Every sheet of a workbook file, read whole. */
+export async function readXlsxFile<M extends ReadMode = 'values'>(
+    path: string,
+    options: ReadOptions<M> = {},
+): Promise<SheetData<ReadModes[M]>[]> {
+    const workbook = await openXlsxFile(path, options);
+    try {
+        const sheets: SheetData<ReadModes[M]>[] = [];
+        for (const sheet of workbook.sheets) sheets.push(await sheet.read());
+        return sheets;
+    } finally {
+        await workbook.close();
+    }
 }

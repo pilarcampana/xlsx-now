@@ -203,7 +203,9 @@ describe('fromExcelSerial', () => {
             new Date(1900, 2, 1),
             new Date(1970, 0, 1),
             new Date(2024, 0, 15),
+            new Date(2024, 0, 15, 12, 30),
             new Date(2024, 0, 15, 12, 30, 45),
+            new Date(2024, 0, 15, 23, 59, 59, 999),
             new Date(2024, 6, 15),
             new Date(1899, 11, 31, 10, 30),
         ]) {

@@ -2,6 +2,7 @@
 // API, which is exactly why they live outside src/core — core has to keep
 // loading unchanged in Node.
 import { createXlsxStream, type CreateXlsxStreamOptions } from '../core/createXlsxStream.js';
+import type { RandomAccess } from '../core/read/randomAccess.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -60,4 +61,35 @@ export async function downloadXlsx(
         URL.revokeObjectURL(url);
     }
     return 'blob';
+}
+
+/**
+ * A `Blob` — a `File` out of an `<input type="file">`, most of the time — as
+ * something the reader can seek in.
+ *
+ * `slice` is what makes this worth having over reading the file into a
+ * `Uint8Array` first: a `File` is a handle on something on disk, and slicing
+ * it reads only the part asked for. So a workbook the user picked is read
+ * without the browser ever holding all of it.
+ *
+ * ```js
+ * const [sheet] = await readXlsx(blobAccess(input.files[0]));
+ * ```
+ */
+export function blobAccess(blob: Blob): RandomAccess {
+    return {
+        size: blob.size,
+        async read(offset: number, length: number): Promise<Uint8Array> {
+            const slice = blob.slice(offset, offset + length);
+            const bytes = new Uint8Array(await slice.arrayBuffer());
+            if (bytes.length !== length) {
+                // `slice` clamps to the end of the blob rather than failing,
+                // so a short answer is the archive pointing past its own end.
+                throw new Error(
+                    `The file ends after ${bytes.length} of the ${length} bytes the archive points at from ${offset}.`,
+                );
+            }
+            return bytes;
+        },
+    };
 }
