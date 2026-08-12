@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { isDateFormat, readNumberFormats } from '../../src/core/read/numberFormats.js';
+import {
+    dateFormatKind,
+    isDateFormat,
+    readNumberFormats,
+} from '../../src/core/read/numberFormats.js';
 import { stylesOf } from '../helpers/package.js';
 
 describe('isDateFormat', () => {
@@ -51,15 +55,16 @@ describe('readNumberFormats', () => {
     it('knows the built-in dates, and that a percentage is not one', () => {
         const formats = readNumberFormats(stylesOf([14, 22, 46, 9, 0, 30]));
         assert.deepEqual(
-            [0, 1, 2, 3, 4, 5].map((style) => formats.isDate(style)),
-            [true, true, true, false, false, true],
+            [0, 1, 2, 3, 4, 5].map((style) => formats.dateKind(style)),
+            ['date', 'dateTime', 'time', undefined, undefined, 'date'],
         );
     });
 
     it('works a declared format out from its code', () => {
-        const formats = readNumberFormats(stylesOf(['yyyy-mm-dd', '#,##0.00']));
-        assert.equal(formats.isDate(0), true);
-        assert.equal(formats.isDate(1), false);
+        const formats = readNumberFormats(stylesOf(['yyyy-mm-dd', '#,##0.00', 'hh:mm:ss']));
+        assert.equal(formats.dateKind(0), 'date');
+        assert.equal(formats.dateKind(1), undefined);
+        assert.equal(formats.dateKind(2), 'time');
     });
 
     it('reads the cell formats and not the named ones next to them', () => {
@@ -74,6 +79,64 @@ describe('readNumberFormats', () => {
     it('says nothing for a style the workbook does not have', () => {
         const formats = readNumberFormats(stylesOf([14]));
         assert.equal(formats.forStyle(7), undefined);
-        assert.equal(formats.isDate(7), false);
+        assert.equal(formats.dateKind(7), undefined);
+    });
+});
+
+describe('dateFormatKind', () => {
+    it('tells a date from a time from both, by what the code writes', () => {
+        assert.equal(dateFormatKind('yyyy-mm-dd'), 'date');
+        assert.equal(dateFormatKind('hh:mm:ss'), 'time');
+        assert.equal(dateFormatKind('yyyy-mm-dd hh:mm:ss'), 'dateTime');
+        assert.equal(dateFormatKind('#,##0.00'), undefined);
+    });
+
+    it('reads an `m` as minutes next to an hour or a second, and as a month elsewhere', () => {
+        // The one letter in a format code that means two things, and Excel's
+        // own rule for it.
+        assert.equal(dateFormatKind('h:mm'), 'time');
+        assert.equal(dateFormatKind('mm:ss'), 'time');
+        assert.equal(dateFormatKind('mm/dd/yy'), 'date');
+        assert.equal(dateFormatKind('m/d/yy h:mm'), 'dateTime');
+    });
+
+    it('never reads three of them as minutes, since a clock has no use for it', () => {
+        assert.equal(dateFormatKind('mmm-yy'), 'date');
+        assert.equal(dateFormatKind('d-mmmm'), 'date');
+    });
+
+    it('reads elapsed time as the time it is', () => {
+        assert.equal(dateFormatKind('[h]:mm:ss'), 'time');
+        assert.equal(dateFormatKind('[mm]:ss'), 'time');
+    });
+
+    it('says nothing for the letters a code only seems to have', () => {
+        // Quoted text, escapes, padding, and everything else in brackets.
+        assert.equal(dateFormatKind('#,##0 "días"'), undefined);
+        assert.equal(dateFormatKind('[Red]0.00'), undefined);
+        assert.equal(dateFormatKind('0.00_);[Blue](0.00)'), undefined);
+        assert.equal(dateFormatKind('0" hs"'), undefined);
+    });
+
+    it('stops at the end of a code that never closes what it opened', () => {
+        // Malformed, and the point is that it ends rather than reading past
+        // the string: a file can hold anything, and this is parsing, not
+        // validation.
+        assert.equal(dateFormatKind('yyyy "sin cerrar'), 'date');
+        assert.equal(dateFormatKind('[sin cerrar'), undefined);
+        // What was opened is still read for what it says: an unclosed `[h` is
+        // as much elapsed hours as a closed one.
+        assert.equal(dateFormatKind('[h'), 'time');
+    });
+
+    it('reads a date under a locale prefix, which is where a bracket is skipped', () => {
+        assert.equal(dateFormatKind('[$-409]d-mmm-yy'), 'date');
+        assert.equal(dateFormatKind('[$-404]e/m/d'), 'date');
+    });
+
+    it('agrees with isDateFormat, which is the same question asked shorter', () => {
+        for (const code of ['yyyy-mm-dd', 'hh:mm', '#,##0.00', '[Red]0.00', 'm/d/yy h:mm']) {
+            assert.equal(isDateFormat(code), dateFormatKind(code) !== undefined, code);
+        }
     });
 });

@@ -36,7 +36,7 @@ describe('readXlsx: what this package wrote', () => {
     it('reads a date back as the same date', async () => {
         const dates = [new Date(2024, 0, 15), new Date(2024, 6, 1, 12, 30), new Date(1900, 0, 1)];
         const bytes = await written({ rows: [dates] });
-        const [sheet] = await readXlsx(bytes);
+        const [sheet] = await readXlsx(bytes, { dates: 'localDate' });
         assert.deepEqual(
             sheet?.cells[0]?.map((value) => (value as Date).getTime()),
             dates.map((date) => date.getTime()),
@@ -139,7 +139,7 @@ describe('readXlsx: files built by hand', () => {
             styles: stylesOf([14]),
             workbookPr: 'date1904="1"',
         });
-        const [sheet] = await readXlsx(bytes);
+        const [sheet] = await readXlsx(bytes, { dates: 'localDate' });
         const date = sheet?.cells[0]?.[0] as Date;
         assert.equal(date.getFullYear(), 2024);
         assert.equal(date.getMonth(), 0);
@@ -213,7 +213,7 @@ describe('readXlsx: what exceljs wrote', () => {
         const bytes = await byExcelJs((sheet) => {
             sheet.addRow([when]);
         });
-        const [sheet] = await readXlsx(bytes);
+        const [sheet] = await readXlsx(bytes, { dates: 'localDate' });
         const read = sheet?.cells[0]?.[0] as Date;
         assert.ok(read instanceof Date, 'a date came back as something else');
         // `exceljs` writes the serial of the UTC clock, so the wall clock that

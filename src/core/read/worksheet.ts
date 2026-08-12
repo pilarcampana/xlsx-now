@@ -10,10 +10,12 @@
 // one is the honest limit of how little a reader can hold, and it is the
 // format's doing — a cell says `<v>7</v>` and means the seventh entry of a
 // table it does not carry.
-import { columnIndex, fromExcelSerial } from '../cell.js';
+import { columnIndex } from '../cell.js';
+import { kindOf, serialOfParts, type DateKind, type DateParts } from '../dates.js';
 import type { CellType, StyledCell } from '../types.js';
+import type { DateReader } from './dates.js';
 import type { NumberFormats } from './numberFormats.js';
-import type { ReadRow, ReadValue } from './types.js';
+import type { RawReadValue, ReadRow } from './types.js';
 import { XmlParser } from './xml.js';
 
 /** Days between the 1900 epoch and the 1904 one a Macintosh workbook uses. */
@@ -36,6 +38,8 @@ export interface CellContext {
     sharedStrings: readonly string[];
     formats: NumberFormats;
     date1904: boolean;
+    /** What a serial under a date format becomes: the `dates` option, resolved. */
+    dates: DateReader<unknown>;
 }
 
 /** `B12` as the coordinates it names, counting columns from 0 and rows from 1. */
@@ -49,6 +53,44 @@ export function parseCellReference(
     return { column, row: Number(match[2]) };
 }
 
+/**
+ * The `d` type of the spec: a date written out instead of numbered, in the
+ * ISO 8601 spelling and with no zone on it — which is the same wall clock
+ * every other date in a sheet is.
+ *
+ * Parsed here rather than by `new Date`, whose reading of these depends on
+ * what is in them: a bare `2024-01-15` is taken as UTC and the same string
+ * with a time on it is taken as local, so the two would land a few hours
+ * apart on the same machine.
+ *
+ * A zone on the end — a `Z`, an `+03:00` — is allowed and then ignored, and
+ * the wall clock is read as it stands. Shifting it by the offset is the one
+ * thing that cannot be done here: there is nowhere to shift it *to*. Every
+ * other date in the sheet is a serial, which is a wall clock and carries no
+ * zone, so honouring this one would leave a single cell meaning something
+ * different from the rest of its column — and, on a machine in another zone,
+ * something different from what it meant yesterday.
+ */
+const ISO_DATE =
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3})\d*)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$/i;
+
+/** Those parts, or `undefined` when the text is not one of them. */
+function isoParts(text: string): DateParts | undefined {
+    const match = ISO_DATE.exec(text.trim());
+    if (!match) return undefined;
+    const at = (index: number, scale = ''): number =>
+        match[index] === undefined ? 0 : Number(match[index].padEnd(scale.length, '0'));
+    return {
+        year: Number(match[1]),
+        month: Number(match[2]),
+        day: Number(match[3]),
+        hour: at(4),
+        minute: at(5),
+        second: at(6),
+        millisecond: at(7, '000'),
+    };
+}
+
 /** The number in a `<v>`, or a failure that names what was there instead. */
 function numberOf(raw: RawCell): number {
     const value = Number(raw.value);
@@ -58,9 +100,17 @@ function numberOf(raw: RawCell): number {
     return value;
 }
 
-/** The date a serial means, under whichever epoch the workbook counts from. */
-function dateOf(serial: number, context: CellContext): Date {
-    return fromExcelSerial(context.date1904 ? serial + DAYS_1904_TO_1900 : serial);
+/**
+ * The date a serial means, as whatever the caller asked dates to be. The
+ * epoch is corrected for here, so a reader is never handed a serial that
+ * counts from anything but 1899-12-30.
+ */
+function dateOf(serial: number, kind: DateKind, context: CellContext): RawReadValue {
+    const from1900 = context.date1904 ? serial + DAYS_1904_TO_1900 : serial;
+    // A reader gives back whatever it was written to give back, and this is
+    // where that stops being tracked: `openXlsx` states the link between the
+    // option and the type in its signature, and one value cannot carry it.
+    return context.dates.read(from1900, { kind }) as RawReadValue;
 }
 
 /**
@@ -77,13 +127,14 @@ function dateOf(serial: number, context: CellContext): Date {
  * It is what the cell shows, and a `null` would be a value that went missing
  * without anyone saying so.
  */
-export function cellValue(raw: RawCell, context: CellContext): ReadValue {
+export function cellValue(raw: RawCell, context: CellContext): RawReadValue {
     if (raw.value === undefined) return null;
     switch (raw.type) {
         case undefined:
         case 'n': {
             const value = numberOf(raw);
-            return context.formats.isDate(raw.style) ? dateOf(value, context) : value;
+            const kind = context.formats.dateKind(raw.style);
+            return kind === undefined ? value : dateOf(value, kind, context);
         }
         case 's': {
             const index = numberOf(raw);
@@ -102,11 +153,16 @@ export function cellValue(raw: RawCell, context: CellContext): ReadValue {
         case 'e':
             return raw.value;
         case 'd': {
-            const date = new Date(raw.value);
-            if (Number.isNaN(date.getTime())) {
+            const parts = isoParts(raw.value);
+            if (parts === undefined) {
                 throw new Error(`A date cell holds "${raw.value}", which is not a date.`);
             }
-            return date;
+            // Back to a serial and out through the same reader as every other
+            // date, rather than answered here with a `Date`: a `d` cell is a
+            // date written out in full instead of numbered, and which of the
+            // two spellings a file happened to use is not a reason for the
+            // sheet to come back holding two different types.
+            return dateOf(serialOfParts(parts), kindOf(parts), context);
         }
         default:
             throw new Error(`A cell says it holds "${raw.type}", which is not a type a sheet has.`);

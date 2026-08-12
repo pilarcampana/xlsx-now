@@ -541,8 +541,13 @@ createXlsxStream({ dateFormat: 'dd/mm/yyyy', rows });   // one country's own
 
 | option | what it is | default |
 | --- | --- | --- |
-| `dateFormat` | a `Date` with no time of day | `14`, the built-in short date |
-| `dateTimeFormat` | a `Date` that carries one | `dateFormat` + ` hh:mm:ss` |
+| `dateFormat` | a value with no time of day | `14`, the built-in short date |
+| `dateTimeFormat` | a value that carries one | `dateFormat` + ` hh:mm:ss` |
+| `timeFormat` | a value that is a time and no date | `21`, the built-in `h:mm:ss` |
+
+`timeFormat` is only reached by a type that is a bare time — a
+`Temporal.PlainTime`. A `Date` always carries a day, whether or not the day
+means anything.
 
 The time of day is added to `dateFormat` on its own, so only the date is ever
 asked for: an hour is written the same way everywhere and the order of a day
@@ -565,9 +570,44 @@ short date runs to.
 The serial is the **wall clock the caller reads**, not the UTC instant. A
 sheet has no time zone: `new Date(2024, 0, 15)` in Buenos Aires has to come
 out of the file reading `2024-01-15`, and taking `getTime()` for the serial
-would write `2024-01-14 21:00`. So the date's own `getTimezoneOffset()` —
-daylight saving and all — is taken off first, and what gets written is the
-same reading `getFullYear()` and `getHours()` give.
+would write `2024-01-14 21:00`. So what gets written is the same reading
+`getFullYear()` and `getHours()` give — daylight saving and all.
+
+#### Which wall clock: `dateClock`
+
+Which is a choice, and `dateClock` is where it is made. A `Date` is an
+instant, and an instant reads differently in every zone; a cell has room for
+exactly one of those readings.
+
+```js
+createXlsxStream({ rows });                      // 'local': the machine's own
+createXlsxStream({ dateClock: 'utc', rows });    // what toISOString() shows
+```
+
+`'local'` is the default and is what the paragraph above describes: the file
+says what the person who wrote it was looking at. `'utc'` is for data that
+was never local to anybody — a timestamp out of a database, an instant off a
+wire — where the machine's zone is an accident of where the file happened to
+be written, and the same input would otherwise land on two different days on
+two different laptops.
+
+It reaches further than the serial: a `Date` at midnight UTC is a *date* read
+one way and a *timestamp* read the other, so the clock decides which of
+`dateFormat` and `dateTimeFormat` the cell gets, and which width
+`autoWidthMax` measures it by.
+
+A third zone is a `DateClock` written out — two methods, one each way:
+
+```js
+const buenosAires = {
+    parts: (date) => utcClock.parts(new Date(date.getTime() - 3 * 3600000)),
+    at: (parts) => new Date(utcClock.at(parts).getTime() + 3 * 3600000),
+};
+createXlsxStream({ dateClock: buenosAires, rows });
+```
+
+None of this touches a `Temporal.PlainDate`, which *is* a wall clock already
+— see below. That is the reason to prefer one: it never raises the question.
 
 ### Types the workbook knows: `types`
 
@@ -646,6 +686,9 @@ a conversion that knows its own magnitude says so, as `dateValue` does.
 | `Date` | the serial, under [the workbook's date formats](#dates) |
 | `BigInt` | a number while a cell can hold one exactly, text past that |
 | `URL` | its `href` |
+| `Temporal.PlainDate` | a whole serial, under `dateFormat` |
+| `Temporal.PlainDateTime` | the serial with the fraction of the day on it |
+| `Temporal.PlainTime` | a serial under 1, under `timeFormat` |
 
 `Date` is one entry among the others and not a case above them, which is the
 whole test of whether this generalizes: a class of your own goes in the same
@@ -658,6 +701,26 @@ withType(defaultTypes, Timestamp, {
     convert: (own, context) => dateValue(own.toDate(), context),
 });
 ```
+
+**The three `Temporal` types are there when the runtime has a `Temporal`**,
+and simply absent when it does not — `defaultTypes` is built by asking, at
+import. Node 26 and later have one out of the box; before that it is a
+polyfill imported ahead of this package, which is the usual order anyway. For
+a `Temporal` that arrived *after* this module did, `withTemporalTypes(base)`
+builds the map again.
+
+Three and no others, because the rest each raise a question a cell has no
+room for the answer to. A `ZonedDateTime` and an `Instant` carry a zone, and
+flattening one to a wall clock is a decision about *which* zone rather than a
+conversion; a `Duration` is not a point in time at all; a `PlainYearMonth`
+and a `PlainMonthDay` are a date with a piece missing, and a sheet numbers
+whole days. Each is a `withType` away for a caller who knows which answer
+they want — which is what `withType` is for.
+
+They are also the types with the least to go wrong. A `Date` written to a
+sheet has to answer [which wall clock it is](#which-wall-clock-dateclock); a
+`PlainDate` *is* a wall clock, which is exactly what a serial is, so the
+conversion is arithmetic and nothing else.
 
 **A `BigInt` past 2<sup>53</sup> becomes text.** A cell stores a double, so
 15 to 16 digits is all the precision there is: written as a number, a longer
@@ -1105,10 +1168,13 @@ import { readXlsx } from 'xlsx-now';
 
 const sheets = await readXlsx(bytes);
 sheets[0].name        // 'Ventas'
-sheets[0].cells       // [['fecha', 'importe'], [Date, 1234.5], ...]
+sheets[0].cells       // [['fecha', 'importe'], [PlainDate, 1234.5], ...]
 sheets[0].maxRow      // 2
 sheets[0].maxCol      // 2
 ```
+
+Dates come back as `Temporal` by default, and as a `Date`, an ISO string or
+the raw serial on request — see [`dates`](#dates-dates).
 
 Every sheet comes back, in the order the workbook declares them, and each one
 is a `{ name, cells, maxCol, maxRow }`. The grid is **dense in rows** — there
@@ -1126,7 +1192,7 @@ is `null`. The same difference the writer makes on the way in.
 ```js
 const [sheet] = await readXlsx(bytes, { mode: 'cells' });
 sheet.cells[1][1]     // { v: 1234.5, s: { numFmt: '#,##0.00' } }
-sheet.cells[1][0]     // { v: 2024-01-15T00:00:00, s: { numFmt: 14 } }
+sheet.cells[1][0]     // { v: PlainDate 2024-01-15, s: { numFmt: 14 } }
 sheet.cells[2][1]     // { v: 3, f: 'SUM(B2:B3)' }
 ```
 
@@ -1138,27 +1204,83 @@ be read, changed and written again without anything in the middle knowing what
 a number format is. `t` is only set where the writer would not work it out on
 its own: the cached string result of a formula, and an error.
 
-### Dates, and the day that never was
+### Dates: `dates`
 
 A date in a sheet is a number; the only thing that makes it a date is the
 number format its style points at. So the reader parses `styles.xml` — the one
 part of the styling it does read — for exactly two questions: which format
-each style shows, and whether that format writes a date. A number under one
-comes back as a `Date`, and the same number under a plain format stays a
-number.
+each style shows, and whether that format writes a date, a time, or both. A
+number under one of those comes back as a date; the same number under a plain
+format stays a number.
 
-The wall clock is what survives, not the instant: a cell that reads
-`15/01/2024 00:00` gives a `Date` that reads `15/01/2024 00:00` wherever it is
-read, the same way the writer writes one.
+**Which runtime type it comes back as is the caller's, not the file's**, and
+every answer is a lossless one:
 
-Two epochs and one bug are handled. `date1904`, which a workbook that came
+| `dates` | a cell holding `45306.4375` |
+| --- | --- |
+| `'temporal'` *(default)* | `Temporal.PlainDateTime` 2024-01-15T10:30:00 |
+| `'localDate'` | a `Date` reading 10:30 on the machine that reads it |
+| `'utcDate'` | a `Date` whose `toISOString()` is `2024-01-15T10:30:00.000Z` |
+| `'isoString'` | `'2024-01-15T10:30:00'` |
+| `'serial'` | `45306.4375` |
+
+```js
+const [sheet] = await readXlsx(bytes);                          // Temporal
+const [sheet] = await readXlsx(bytes, { dates: 'localDate' });  // as it always was
+```
+
+Each of them narrows the type of what comes back, so `{ dates: 'isoString' }`
+reads a sheet of strings and TypeScript knows it.
+
+**`temporal` is the default** because it is the only one that does not have to
+decide something the file never said. A sheet stores a wall clock, and
+`Temporal.PlainDate` *is* a wall clock; a `Date` is an instant, so reading one
+back means picking a zone the file has no room for, and a midnight is a
+midnight only on the machine that agrees with the writer's.
+
+It gives three types, and **the value decides which**:
+
+- a whole serial is a `PlainDate` — a day, with no midnight invented onto it;
+- a serial with a fraction is a `PlainDateTime`;
+- a serial under 1 whose format shows only a time is a `PlainTime`, since the
+  day it lands on is Excel's placeholder and not a date anybody wrote.
+
+Which is the same rule the writer follows in reverse, so all three close the
+round trip. The cost is that one column comes back as two types where a single
+row of it carries a time; the alternative — taking the format's word for it —
+is a time of day silently dropped from a cell whose format only mentions the
+day.
+
+`'temporal'` needs a `Temporal` in the runtime, and **says so when the package
+is opened** rather than when the first date turns up: whether the code runs is
+a question about the runtime, not about which file happened to arrive, so a
+workbook with no dates in it fails too. Node 26 and later have one; before
+that, `import 'temporal-polyfill/global'` ahead of the first read.
+
+**Or a reader of your own**, which is the reader's half of what
+[`types`](#types-the-workbook-knows-types) is on the writer's side:
+
+```js
+const luxon = {
+    read: (serial) => DateTime.fromSeconds((serial - 25569) * 86400, { zone: 'utc' }),
+};
+const [sheet] = await readXlsx(bytes, { dates: luxon });
+```
+
+`read` is handed the serial — with a 1904 workbook's epoch already corrected
+for — and `{ kind }`, which is what the cell's number format shows:
+`'date'`, `'time'` or `'dateTime'`. An optional `check()` runs once when the
+package is opened, which is where `'temporal'` looks for its `Temporal`.
+
+**Two epochs and one bug are handled.** `date1904`, which a workbook that came
 from a Macintosh Excel still declares, shifts every serial by 1462 days. And
 [the 29th of February of 1900](https://learn.microsoft.com/office/troubleshoot/excel/wrongly-assumes-1900-is-leap-year),
 a day Lotus 1-2-3 invented and Excel copied on purpose, which makes every
 serial from the 1st of March of 1900 on one higher than a plain count of days.
 Both directions know about it. The one serial with no answer is 60 — the
 phantom day itself — and it is refused rather than given one of its
-neighbours, which would make two different serials read as the same date.
+neighbours, which would make two different serials read as the same date —
+`{ dates: 'serial' }` is the one way to see it at all.
 
 ### Where the bytes come from
 
@@ -1321,14 +1443,54 @@ The public surface is `src/core/index.ts`, which exports `XlsxWriter`,
 `XlsxStream` and `createXlsxStream` for writing, `readXlsx` and `openXlsx`
 for reading, plus the types callers need (`Column`, `Row`, `CellValue`,
 `SheetInput`, `WorksheetCommand`, `LineCommand`, `XlsxSheet`, `RowOptions`,
-`CompressionLevel`, `SheetData`, `ReadValue`, `ReadRow`) and the `WORKSHEET`
-and `LINE` keys themselves, with the environment-specific faces under
-`src/node/index.ts` and `src/browser/index.ts`.
+`CompressionLevel`, `SheetData`, `ReadValue`, `ReadRow`, `DateReader`,
+`DateClock`, `TemporalDate`) and the `WORKSHEET` and `LINE` keys themselves,
+with the environment-specific faces under `src/node/index.ts` and
+`src/browser/index.ts`.
 
 ```sh
 npm run build      # tsc -> dist/ (JS + .d.ts + source maps), then the UMD bundle
 npm run typecheck  # tsc --noEmit
 ```
+
+### Naming `Temporal` without depending on having it
+
+`Temporal` is two problems wearing one name, and they are not the same one.
+At *runtime* it is a global an engine either has or does not — Node 26 has it,
+Node 22 has it behind a flag, a browser a year behind has it through a
+polyfill or not at all. At *compile time* it is a type a `lib` either declares
+or does not: TypeScript 6 added `lib.esnext.temporal`, and every version
+before it has never heard of the name.
+
+The shipped `.d.ts` has to keep compiling for somebody on TypeScript 5.9 with
+`lib: ES2022`, and still hand somebody on 6 or 7 the *real*
+`Temporal.PlainDate` rather than a look-alike they would need a cast to use.
+Writing `Temporal.PlainDate` in a declaration fails the first; declaring our
+own shapes and stopping there fails the second.
+
+So the names in [`src/core/temporal.ts`](src/core/temporal.ts) are
+conditional on what the compiling `lib` turns out to have:
+
+```ts
+type TemporalGlobal = typeof globalThis extends { Temporal: infer T } ? T : undefined;
+```
+
+`typeof globalThis` is what makes that answerable — TypeScript builds it out
+of the global declarations actually in scope, so asking whether it has a
+`Temporal` is asking whether the `lib` in force declared one, a question with
+an answer at every version rather than an error at the older ones. From there
+the instance type is read off the constructor's `prototype`, because
+`lib.esnext.temporal` declares each of these as an *interface* with a `var`
+next to it and not as a class. Where there is no `Temporal`, it falls back to
+a small structural shape of the fields this package touches.
+
+Which means this repository stays on TypeScript 5.9, no dependency is added
+for the types, the UMD bundles are byte-for-byte what they were, and the
+choice is made where it belongs: in the consumer's compilation. Both halves
+are checked against real compilers — a 5.9 consumer on `lib: ES2022`, and a
+7.0 consumer on `lib: ESNext`, where a compile-time assertion in
+[`test/read/dates.test.ts`](test/read/dates.test.ts) requires this package's
+`PlainDate` to *be* `Temporal.PlainDate`.
 
 ## Tests
 
@@ -1338,7 +1500,20 @@ npm run test-ci  # mocha under c8: console summary, coverage/lcov.info, coverage
 ```
 
 The tests live in [`test/`](test), are written in TypeScript against the
-sources in `src/` (never against `dist/`), and run on Node. The browser side
+sources in `src/` (never against `dist/`), and run on Node.
+
+[`temporal-polyfill`](https://www.npmjs.com/package/temporal-polyfill) is
+loaded by `.mocharc.json` before any spec file, so the `Temporal` paths are
+exercised on every Node this repository supports and not only on 26 — and it
+is the polyfill and not `--harmony-temporal`, because a polyfill is what most
+callers will be on for a while yet, and because it does not depend on a V8
+flag staying where it is. It installs nothing where there is already a
+`Temporal`, so the CI run on Node 26 tests the native one and the runs below
+it test the polyfill, which is both cases and not one.
+
+The case with *no* `Temporal` is covered too, by spawning a plain `node` with
+nothing loaded and reading the error back; that one skips itself on a runtime
+that has `Temporal` natively. The browser side
 is a second stage: what runs today is what Node can run, which turns out to
 be almost everything — `Blob`, `Response` and the Web Streams are all native
 here, so `src/browser/index.ts` is covered too, with only the DOM around it
@@ -1552,11 +1727,12 @@ columns — fails the freeze check.
   Access API.** Firefox/Safari don't support `showSaveFilePicker`, so on
   those the current fallback still generates incrementally but has to
   materialize a `Blob` before the browser's normal download flow can start.
-- **`Temporal` out of the box.** `Temporal.PlainDate` and the rest are exactly
-  what [`types`](#types-the-workbook-knows-types) is for, and adding them is a
-  `withType` away — but they are not in `defaultTypes`, because this
-  repository's Node and its `lib` setting have neither the runtime nor the
-  types to write them against and test them.
+- **`Temporal` beyond the three plain types.** `PlainDate`, `PlainDateTime`
+  and `PlainTime` are [in `defaultTypes`](#types-the-workbook-knows-types) and
+  are what [the reader gives back by default](#dates-dates). A
+  `ZonedDateTime`, an `Instant` or a `Duration` is still a `withType` away, on
+  purpose: each needs a decision — which zone, what a duration of a day is —
+  that belongs to whoever has one, not to a default.
 - **Shared formulas and array formulas.** A cell's `f` is its own; the
   `shared`/`array` forms, where one expression covers a range, are not
   emitted. Nothing about them is ruled out by the design. Reading one back is

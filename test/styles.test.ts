@@ -450,8 +450,8 @@ describe('StyleTable: the styles a cell falls under, stacked', () => {
 });
 
 describe('DateFormats', () => {
-    const day = new Date(2024, 0, 15);
-    const moment = new Date(2024, 0, 15, 12, 30);
+    const day = 'date' as const;
+    const moment = 'dateTime' as const;
 
     it('falls back to the built-in short date, and to the one with the time', () => {
         const dates = new DateFormats();

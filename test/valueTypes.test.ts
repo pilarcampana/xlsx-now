@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { columnWidth, WidthMeter } from '../src/core/autoWidth.js';
+import { excelSerial, localClock, utcClock } from '../src/core/dates.js';
 import { cellRowXml } from '../src/core/sheet.js';
 import {
     DateFormats,
@@ -21,7 +22,7 @@ import {
 } from '../src/core/valueTypes.js';
 
 /** The context a workbook that said nothing about its dates hands out. */
-const PLAIN = { dates: new DateFormats() };
+const PLAIN = { dates: new DateFormats(), clock: localClock };
 
 describe('dateValue', () => {
     it('writes a Date as an Excel serial number', () => {
@@ -39,7 +40,7 @@ describe('dateValue', () => {
     });
 
     it('takes the formats the workbook it belongs to uses', () => {
-        const context = { dates: new DateFormats({ dateFormat: 'yyyy-mm-dd' }) };
+        const context = { dates: new DateFormats({ dateFormat: 'yyyy-mm-dd' }), clock: localClock };
         assert.equal(dateValue(new Date(2024, 0, 15), context).numFmt, 'yyyy-mm-dd');
         assert.equal(
             dateValue(new Date(2024, 0, 15, 12, 30), context).numFmt,
@@ -58,7 +59,7 @@ describe('dateValue', () => {
     });
 
     it('measures a date the workbook spelled out by its own format code', () => {
-        const context = { dates: new DateFormats({ dateFormat: 'dd/mm/yy' }) };
+        const context = { dates: new DateFormats({ dateFormat: 'dd/mm/yy' }), clock: localClock };
         assert.equal(dateValue(new Date(2024, 0, 15), context).width, 'dd/mm/yy'.length);
     });
 });
@@ -319,5 +320,27 @@ describe('a value of a registered type, in a row', () => {
     it('lets the Object entry take what would have been refused', () => {
         const types = withType(TYPES, Object, { convert: (o) => ({ v: Object.keys(o).join() }) });
         assert.match(rowXml([{ nope: 1 } as never], types), /<t>nope<\/t>/);
+    });
+});
+
+describe('dateValue: the clock it is read with', () => {
+    const utc = { dates: new DateFormats(), clock: utcClock };
+    const when = new Date(Date.UTC(2024, 0, 15, 12, 30));
+
+    it('writes the wall clock the machine shows, by default', () => {
+        assert.equal(dateValue(when, PLAIN).v, excelSerial(when, localClock));
+    });
+
+    it('writes the wall clock toISOString shows, when asked for UTC', () => {
+        assert.equal(dateValue(when, utc).v, 45306.52083333333);
+    });
+
+    it('decides the format on the clock it read, not on the instant', () => {
+        // Midnight UTC is a date under the UTC clock and a timestamp under
+        // any clock that is not on UTC — so the format has to follow the
+        // reading, or a date comes out shown as `00:00:00`.
+        const midnight = new Date(Date.UTC(2024, 0, 15));
+        assert.equal(dateValue(midnight, utc).numFmt, DEFAULT_DATE_FORMAT);
+        assert.equal(dateValue(midnight, utc).width, 'dd/mm/yyyy'.length);
     });
 });

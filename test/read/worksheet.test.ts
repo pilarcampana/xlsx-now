@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { NO_FORMATS, readNumberFormats } from '../../src/core/read/numberFormats.js';
-import type { ReadRow, ReadValue } from '../../src/core/read/types.js';
+import { localDates } from '../../src/core/read/dates.js';
+import type { RawReadValue, ReadRow } from '../../src/core/read/types.js';
 import {
     cellValue,
     parseCellReference,
@@ -12,7 +13,14 @@ import {
 import { stylesOf } from '../helpers/package.js';
 import { asAsyncIterable } from '../helpers/streams.js';
 
-const PLAIN: CellContext = { sharedStrings: [], formats: NO_FORMATS, date1904: false };
+const PLAIN: CellContext = {
+    sharedStrings: [],
+    formats: NO_FORMATS,
+    date1904: false,
+    // A `Date` is what these tests read dates as: the assertions here are
+    // about the cell, not about which of the five types it comes back in.
+    dates: localDates,
+};
 
 function context(overrides: Partial<CellContext>): CellContext {
     return { ...PLAIN, ...overrides };
@@ -38,7 +46,7 @@ async function rowsOf<C>(
     return rows;
 }
 
-const values = (body: string, ctx = PLAIN, chunks?: number): Promise<ReadRow<ReadValue>[]> =>
+const values = (body: string, ctx = PLAIN, chunks?: number): Promise<ReadRow<RawReadValue>[]> =>
     rowsOf(body, (cell) => cellValue(cell, ctx), chunks);
 
 describe('parseCellReference', () => {
@@ -81,9 +89,31 @@ describe('cellValue', () => {
     });
 
     it('reads a date written out in full, which the spec allows and Excel does not write', () => {
-        const value = cellValue(raw({ type: 'd', value: '2024-01-15T12:30:00Z' }), PLAIN);
+        const value = cellValue(raw({ type: 'd', value: '2024-01-15T12:30:00' }), PLAIN);
         assert.ok(value instanceof Date);
-        assert.equal(value.toISOString(), '2024-01-15T12:30:00.000Z');
+        assert.deepEqual(
+            [value.getFullYear(), value.getMonth(), value.getDate(), value.getHours()],
+            [2024, 0, 15, 12],
+        );
+    });
+
+    it('reads a date written out with a zone as the wall clock it shows', () => {
+        // The zone is allowed and dropped: the rest of the sheet is serials,
+        // which carry none, and a cell that moved by three hours where its
+        // neighbours did not would be the odd one out in its own column.
+        const withZone = cellValue(raw({ type: 'd', value: '2024-01-15T12:30:00Z' }), PLAIN);
+        const without = cellValue(raw({ type: 'd', value: '2024-01-15T12:30:00' }), PLAIN);
+        assert.deepEqual(withZone, without);
+    });
+
+    it('reads a date written out as a day alone, with no time to go with it', () => {
+        const value = cellValue(raw({ type: 'd', value: '2024-01-15' }), PLAIN);
+        assert.ok(value instanceof Date);
+        assert.equal(value.getHours(), 0);
+    });
+
+    it('refuses a date cell holding something that is not one', () => {
+        assert.throws(() => cellValue(raw({ type: 'd', value: 'ayer' }), PLAIN), /not a date/);
     });
 
     it('is a Date when the format under the number says it is one', () => {
@@ -202,7 +232,7 @@ describe('readRows', () => {
         const xml =
             '<x:worksheet xmlns:x="urn:x"><x:sheetData><x:row r="1">' +
             '<x:c r="A1"><x:v>7</x:v></x:c></x:row></x:sheetData></x:worksheet>';
-        const rows: ReadRow<ReadValue>[] = [];
+        const rows: ReadRow<RawReadValue>[] = [];
         for await (const row of readRows(
             asAsyncIterable([xml]),
             (cell) => cellValue(cell, PLAIN),
@@ -220,7 +250,7 @@ describe('readRows', () => {
         const xml =
             '<worksheet><dimension ref="A1:B2"/><sheetData><row r="1"><c><v>1</v></c></row>' +
             '</sheetData><mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells></worksheet>';
-        const rows: ReadRow<ReadValue>[] = [];
+        const rows: ReadRow<RawReadValue>[] = [];
         for await (const row of readRows(
             asAsyncIterable([xml]),
             (cell) => cellValue(cell, PLAIN),

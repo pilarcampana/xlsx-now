@@ -11,7 +11,8 @@
 // distinct combination is registered once and reused from then on, so what
 // this holds is bounded by how many different styles the workbook has, not by
 // how many rows it has.
-import { hasTimeOfDay, sanitizeText } from './cell.js';
+import { sanitizeText } from './cell.js';
+import type { DateKind } from './dates.js';
 
 /**
  * A colour, as hex: `#RGB`, `#RRGGBB`, `RRGGBB` or `AARRGGBB`, with the `#`
@@ -136,6 +137,13 @@ export type StyleRef = string | StyleSpec;
  */
 export const DEFAULT_DATE_FORMAT = 14;
 export const DEFAULT_DATETIME_FORMAT = 22;
+/**
+ * And what a value that is a time and nothing else falls back to: Excel's
+ * built-in `h:mm:ss`. Nothing reaches it unless a type that is a bare time
+ * was written — a `Temporal.PlainTime` — since a `Date` always carries a day
+ * whether or not the day means anything.
+ */
+export const DEFAULT_TIME_FORMAT = 21;
 
 /**
  * The time of day, added to a date format that carries none — the one part of
@@ -151,6 +159,8 @@ const TIME_OF_DAY = 'hh:mm:ss';
  */
 const BUILTIN_DATE_WIDTH = 10;
 const BUILTIN_DATETIME_WIDTH = BUILTIN_DATE_WIDTH + 1 + TIME_OF_DAY.length;
+/** The same for a bare time, which is what `h:mm:ss` writes out to. */
+const BUILTIN_TIME_WIDTH = TIME_OF_DAY.length;
 
 /** Excel's built-in formats take the ids below this one; ours start here. */
 const FIRST_CUSTOM_NUMFMT = 164;
@@ -171,22 +181,31 @@ export interface DateFormatOptions {
      * to add anything to.
      */
     dateTimeFormat?: string | number;
+    /**
+     * The same again, for a value that is a time of day and no date — a
+     * `Temporal.PlainTime`. Defaults to `21`, the built-in `h:mm:ss`.
+     */
+    timeFormat?: string | number;
 }
 
 /**
- * The two formats a `Date` falls back to, worked out once for the workbook.
+ * The three formats a date falls back to, worked out once for the workbook.
  *
  * There is one of these behind every date in the file — the format a cell
  * gets when its style says nothing, and the width that date is measured as
- * when the sheet is sizing its columns.
+ * when the sheet is sizing its columns. Which of the three a value gets is
+ * its `DateKind`, and working *that* out is the value's own business: this
+ * only answers what each of the three is shown as.
  */
 export class DateFormats {
     readonly date: string | number;
     readonly dateTime: string | number;
+    readonly time: string | number;
 
-    constructor({ dateFormat, dateTimeFormat }: DateFormatOptions = {}) {
+    constructor({ dateFormat, dateTimeFormat, timeFormat }: DateFormatOptions = {}) {
         this.date = dateFormat ?? DEFAULT_DATE_FORMAT;
         this.dateTime = dateTimeFormat ?? this.impliedDateTime();
+        this.time = timeFormat ?? DEFAULT_TIME_FORMAT;
     }
 
     /** What a timestamp is shown as when only the date format was given. */
@@ -203,20 +222,22 @@ export class DateFormats {
         );
     }
 
-    /** The format this value falls back to: the date, or the date and time. */
-    for(value: Date): string | number {
-        return hasTimeOfDay(value) ? this.dateTime : this.date;
+    /** The format a value of this kind falls back to. */
+    for(kind: DateKind): string | number {
+        if (kind === 'time') return this.time;
+        return kind === 'dateTime' ? this.dateTime : this.date;
     }
 
     /**
-     * How many characters this value shows. A format code is measured as it
-     * is written, which is what the date under it comes to; a built-in is the
-     * reader's own, so it is measured as the widest one.
+     * How many characters a value of this kind shows. A format code is
+     * measured as it is written, which is what the date under it comes to; a
+     * built-in is the reader's own, so it is measured as the widest one.
      */
-    textLength(value: Date): number {
-        const format = this.for(value);
+    textLength(kind: DateKind): number {
+        const format = this.for(kind);
         if (typeof format === 'string') return format.length;
-        return hasTimeOfDay(value) ? BUILTIN_DATETIME_WIDTH : BUILTIN_DATE_WIDTH;
+        if (kind === 'time') return BUILTIN_TIME_WIDTH;
+        return kind === 'dateTime' ? BUILTIN_DATETIME_WIDTH : BUILTIN_DATE_WIDTH;
     }
 }
 

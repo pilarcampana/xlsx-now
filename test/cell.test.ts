@@ -3,9 +3,6 @@ import {
     cellRef,
     cellXml,
     columnLetters,
-    excelSerial,
-    fromExcelSerial,
-    hasTimeOfDay,
     sanitizeText,
 } from '../src/core/cell.js';
 
@@ -144,101 +141,6 @@ describe('cellXml', () => {
     });
 });
 
-describe('excelSerial', () => {
-    it('is the day count from Excel\'s own epoch', () => {
-        assert.equal(excelSerial(new Date(1970, 0, 1)), 25569);
-        assert.equal(excelSerial(new Date(1970, 0, 2)), 25570);
-    });
-
-    it('is a whole number for a date with no time on it, wherever it is written', () => {
-        // A sheet holds a wall clock, not an instant: taking `getTime()` for
-        // the serial would move every date by the writer's own offset, which
-        // west of Greenwich lands a midnight on the day before.
-        for (const date of [new Date(2024, 0, 15), new Date(2024, 6, 15)]) {
-            assert.ok(Number.isInteger(excelSerial(date)), `${date.toString()} is not a whole day`);
-        }
-    });
-
-    it('keeps the time of day the caller reads off the date', () => {
-        const noon = excelSerial(new Date(2024, 0, 15, 12, 0, 0));
-        assert.equal(noon - Math.floor(noon), 0.5);
-    });
-
-    it('follows the offset of the date itself, daylight saving and all', () => {
-        // Two dates six months apart are 182 whole days apart, even where
-        // only one of them is in daylight saving time.
-        const january = excelSerial(new Date(2024, 0, 15));
-        const july = excelSerial(new Date(2024, 6, 15));
-        assert.equal(july - january, 182);
-    });
-
-    it('numbers the days of 1900 the way a spreadsheet does', () => {
-        // Excel's own numbering, which counts a 29/02/1900 that never was:
-        // everything up to 28/02/1900 is one lower than the days since
-        // 1899-12-30 that the arithmetic gives.
-        assert.equal(excelSerial(new Date(1900, 0, 1)), 1);
-        assert.equal(excelSerial(new Date(1900, 1, 28)), 59);
-        assert.equal(excelSerial(new Date(1900, 2, 1)), 61);
-    });
-
-    it('keeps a time of day that carries no date, as serial zero does', () => {
-        assert.equal(excelSerial(new Date(1899, 11, 31, 10, 30)), 0.4375);
-    });
-
-    it('refuses a date a spreadsheet has no number for', () => {
-        assert.throws(() => excelSerial(new Date(1899, 11, 30)), RangeError);
-        assert.throws(() => excelSerial(new Date(1885, 5, 20)), RangeError);
-    });
-
-    it('refuses an invalid date rather than writing NaN into a cell', () => {
-        assert.throws(() => excelSerial(new Date('no es una fecha')), RangeError);
-    });
-});
-
-describe('fromExcelSerial', () => {
-    it('is excelSerial the other way round', () => {
-        for (const date of [
-            new Date(1900, 0, 1),
-            new Date(1900, 1, 28),
-            new Date(1900, 2, 1),
-            new Date(1970, 0, 1),
-            new Date(2024, 0, 15),
-            new Date(2024, 0, 15, 12, 30),
-            new Date(2024, 0, 15, 12, 30, 45),
-            new Date(2024, 0, 15, 23, 59, 59, 999),
-            new Date(2024, 6, 15),
-            new Date(1899, 11, 31, 10, 30),
-        ]) {
-            assert.equal(
-                fromExcelSerial(excelSerial(date)).getTime(),
-                date.getTime(),
-                `${date.toString()} did not survive the round trip`,
-            );
-        }
-    });
-
-    it('reads the wall clock the file was written with', () => {
-        const date = fromExcelSerial(45306.5);
-        assert.equal(date.getFullYear(), 2024);
-        assert.equal(date.getMonth(), 0);
-        assert.equal(date.getDate(), 15);
-        assert.equal(date.getHours(), 12);
-    });
-
-    it('refuses the day that never was, and anything below zero', () => {
-        assert.throws(() => fromExcelSerial(60), RangeError);
-        assert.throws(() => fromExcelSerial(60.5), RangeError);
-        assert.throws(() => fromExcelSerial(-1), RangeError);
-    });
-});
-
-describe('hasTimeOfDay', () => {
-    it('is what tells a date from a date and a time', () => {
-        assert.equal(hasTimeOfDay(new Date(2024, 0, 15)), false);
-        assert.equal(hasTimeOfDay(new Date(2024, 0, 15, 0, 0, 0, 1)), true);
-        assert.equal(hasTimeOfDay(new Date(2024, 0, 15, 12, 30)), true);
-    });
-});
 
 describe('cellXml: a formula', () => {
     it('writes the expression, and the value next to it as the cached result', () => {

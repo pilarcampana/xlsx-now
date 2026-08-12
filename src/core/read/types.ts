@@ -1,19 +1,34 @@
 import type { StyledCell } from '../types.js';
+import type { TemporalDate } from '../temporal.js';
 
 /**
  * A value as the reader gives it back: the four things a sheet holds, plus
- * the `Date` a number under a date format turns out to be.
+ * whatever a number under a date format was asked to become.
  *
- * Deliberately narrower than the writer's `CellValue`, which is open to any
- * class the caller registered a type for. Nothing like that comes back out of
- * a file: what a sheet stores is a number, a string, a boolean or nothing,
- * and a `Date` is the one of them the format gives a meaning to.
+ * `D` is that last one, and it is the `dates` option said as a type — a
+ * `Temporal.PlainDate` by default, a `Date` under `'localDate'`, a `string`
+ * under `'isoString'`. The rest is not open to anything: what a sheet stores
+ * is a number, a string, a boolean or nothing, and the date is the one of
+ * them the format gives a second meaning to.
  *
  * `null` is a cell that is there and empty. A cell that is not there at all
  * is `undefined`, and the two are different on purpose — the same difference
  * the writer makes on the way in.
  */
-export type ReadValue = string | number | boolean | Date | null;
+export type ReadValue<D = TemporalDate> = string | number | boolean | D | null;
+
+/**
+ * The same with the date type left open: what a cell is read as before the
+ * `dates` option's answer is put back on it.
+ *
+ * It exists because the value and the type it is known by are settled in two
+ * different places. Reading a cell is one function for every option, so what
+ * it gives back has to be wide enough for all of them; which of them it
+ * actually is comes from `openXlsx`'s signature, and a value cannot carry
+ * that. `object` is as narrow as the open end can be said, since a reader of
+ * the caller's own returns a class this package has never heard of.
+ */
+export type RawReadValue = string | number | bigint | boolean | object | null;
 
 /**
  * What comes back for each cell, chosen by `mode`:
@@ -25,9 +40,17 @@ export type ReadValue = string | number | boolean | Date | null;
  */
 export type ReadMode = 'values' | 'cells';
 
-/** What each mode gives back per cell. */
-export interface ReadModes {
-    values: ReadValue;
+/**
+ * What each mode gives back per cell.
+ *
+ * Only `values` carries the date type through. A `StyledCell` is the writer's
+ * own shape and its `v` is a `CellValue`, which is already open to every class
+ * a workbook was taught — so a cell read as one is a cell the writer takes
+ * back whatever the dates in it were read as, which is the whole point of the
+ * mode.
+ */
+export interface ReadModes<D = TemporalDate> {
+    values: ReadValue<D>;
     cells: StyledCell;
 }
 

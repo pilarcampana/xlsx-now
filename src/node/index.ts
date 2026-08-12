@@ -6,6 +6,7 @@
 import { createWriteStream } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
 import { createXlsxStream, type CreateXlsxStreamOptions } from '../core/createXlsxStream.js';
+import type { DateOf, DateOption } from '../core/read/dates.js';
 import type { RandomAccess } from '../core/read/randomAccess.js';
 import { openXlsx, type ReadOptions, type XlsxReader } from '../core/read/readXlsx.js';
 import type { ReadMode, ReadModes, SheetData } from '../core/read/types.js';
@@ -138,10 +139,13 @@ export interface XlsxFileReader<C> extends XlsxReader<C> {
  * }
  * ```
  */
-export async function openXlsxFile<M extends ReadMode = 'values'>(
+export async function openXlsxFile<
+    M extends ReadMode = 'values',
+    D extends DateOption = 'temporal',
+>(
     path: string,
-    options: ReadOptions<M> = {},
-): Promise<XlsxFileReader<ReadModes[M]>> {
+    options: ReadOptions<M, D> = {},
+): Promise<XlsxFileReader<ReadModes<DateOf<D>>[M]>> {
     const file = await open(path);
     try {
         const { size } = await file.stat();
@@ -156,13 +160,16 @@ export async function openXlsxFile<M extends ReadMode = 'values'>(
 }
 
 /** Every sheet of a workbook file, read whole. */
-export async function readXlsxFile<M extends ReadMode = 'values'>(
+export async function readXlsxFile<
+    M extends ReadMode = 'values',
+    D extends DateOption = 'temporal',
+>(
     path: string,
-    options: ReadOptions<M> = {},
-): Promise<SheetData<ReadModes[M]>[]> {
+    options: ReadOptions<M, D> = {},
+): Promise<SheetData<ReadModes<DateOf<D>>[M]>[]> {
     const workbook = await openXlsxFile(path, options);
     try {
-        const sheets: SheetData<ReadModes[M]>[] = [];
+        const sheets: SheetData<ReadModes<DateOf<D>>[M]>[] = [];
         for (const sheet of workbook.sheets) sheets.push(await sheet.read());
         return sheets;
     } finally {

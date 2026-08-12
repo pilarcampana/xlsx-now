@@ -6,6 +6,14 @@
 // collect those rows into a grid, which is what most callers want and what
 // none of them should have to hold if they don't.
 import type { StyledCell } from '../types.js';
+import {
+    dateReaderOf,
+    type DateContext,
+    type DateOf,
+    type DateOption,
+    type DateReader,
+    type DateReaderName,
+} from './dates.js';
 import { NO_FORMATS, readNumberFormats, type NumberFormats } from './numberFormats.js';
 import { bytesAccess, type RandomAccess } from './randomAccess.js';
 import { readSharedStrings } from './sharedStrings.js';
@@ -29,9 +37,34 @@ import { entryChunks, readCentralDirectory, readEntryText, type ZipEntry } from 
 /** An archive to read: bytes in hand, or anything that can be seeked in. */
 export type XlsxSource = Uint8Array | RandomAccess;
 
-export interface ReadOptions<M extends ReadMode> {
+// The defaults here are the *widest* each parameter can be, which is not what
+// `openXlsx` defaults them to: a bare `ReadOptions` is somebody naming the
+// shape of the options object, and every option belongs in it. What a call
+// that says nothing actually gets — `values` and `temporal` — is settled on
+// the function, where there is a call to infer it from.
+export interface ReadOptions<M extends ReadMode = ReadMode, D extends DateOption = DateOption> {
     /** What each cell comes back as. Defaults to `values`. */
     mode?: M;
+    /**
+     * What a number under a date format comes back as. Defaults to
+     * `'temporal'`.
+     *
+     * - `'temporal'` — `Temporal.PlainDate`, `PlainDateTime` or `PlainTime`,
+     *   whichever the value and its format call for. Needs a `Temporal` in
+     *   the runtime, and says so when the package is opened rather than when
+     *   the first date turns up.
+     * - `'localDate'` — a `Date` reading the same wall clock on the machine
+     *   that reads it, which is what dates came back as before there was
+     *   anything to choose.
+     * - `'utcDate'` — a `Date` whose UTC reading is the sheet's wall clock.
+     * - `'isoString'` — `'2024-01-15'`, `'2024-01-15T10:30:00'` or
+     *   `'10:30:00'`, with no zone on the end.
+     * - `'serial'` — the number as the file has it, with nothing made of it.
+     *
+     * Or a `DateReader` of the caller's own, which is how a `DateTime` of
+     * some other library gets read without this package knowing about it.
+     */
+    dates?: D;
 }
 
 /** One worksheet of an open package, not read yet. */
@@ -60,10 +93,20 @@ export interface XlsxReader<C> {
  * are reached through the central directory, so there is no first sheet to
  * get past.
  */
-export async function openXlsx<M extends ReadMode = 'values'>(
+export async function openXlsx<
+    M extends ReadMode = 'values',
+    D extends DateOption = 'temporal',
+>(
     source: XlsxSource,
-    options: ReadOptions<M> = {},
-): Promise<XlsxReader<ReadModes[M]>> {
+    options: ReadOptions<M, D> = {},
+): Promise<XlsxReader<ReadModes<DateOf<D>>[M]>> {
+    // Before the file is touched at all: whether dates can be read the way
+    // they were asked for is a question about this runtime, not about this
+    // workbook, and a workbook with no dates in it is not a reason for the
+    // answer to change.
+    const dates = dateReaderOf(options.dates);
+    dates.check?.();
+
     const access = source instanceof Uint8Array ? bytesAccess(source) : source;
     const entries = await readCentralDirectory(access);
 
@@ -93,18 +136,19 @@ export async function openXlsx<M extends ReadMode = 'values'>(
         sharedStrings: sharedStringsXml === undefined ? [] : readSharedStrings(sharedStringsXml),
         formats,
         date1904: workbook.date1904,
+        dates,
     };
 
-    // The one cast in the reader, and what it stands in for is the link
+    // The one cast left in the reader, and what it stands in for is the link
     // between the `mode` asked for and the shape it gives back — which the
     // signature states and a value cannot carry.
     const convert = (
         options.mode === 'cells'
             ? (raw: RawCell) => styledCell(raw, context)
             : (raw: RawCell) => cellValue(raw, context)
-    ) as (raw: RawCell) => ReadModes[M];
+    ) as (raw: RawCell) => ReadModes<DateOf<D>>[M];
 
-    const sheets = workbook.sheets.map((sheet): XlsxSheetReader<ReadModes[M]> => {
+    const sheets = workbook.sheets.map((sheet): XlsxSheetReader<ReadModes<DateOf<D>>[M]> => {
         const relationship = relationships.get(sheet.relationshipId);
         if (!relationship) {
             throw new Error(
@@ -112,7 +156,7 @@ export async function openXlsx<M extends ReadMode = 'values'>(
             );
         }
         const part = relationship.part;
-        const rows = (): AsyncIterable<ReadRow<ReadModes[M]>> =>
+        const rows = (): AsyncIterable<ReadRow<ReadModes<DateOf<D>>[M]>> =>
             readRows(decodeChunks(entryChunks(access, entry(part))), convert, part);
         return { name: sheet.name, rows, read: () => collect(sheet.name, rows()) };
     });
@@ -149,17 +193,34 @@ async function collect<C>(name: string, rows: AsyncIterable<ReadRow<C>>): Promis
  * first.cells[0]?.[1]                       // what B1 holds
  *
  * const [asCells] = await readXlsx(bytes, { mode: 'cells' });
- * asCells.cells[0]?.[1]                     // { v: 45306, s: { numFmt: 14 } }
+ * asCells.cells[0]?.[1]                     // { v: PlainDate, s: { numFmt: 14 } }
+ *
+ * const [asDates] = await readXlsx(bytes, { dates: 'localDate' });
+ * asDates.cells[0]?.[1]                     // a Date, as it always was
  * ```
  */
-export async function readXlsx<M extends ReadMode = 'values'>(
+export async function readXlsx<
+    M extends ReadMode = 'values',
+    D extends DateOption = 'temporal',
+>(
     source: XlsxSource,
-    options: ReadOptions<M> = {},
-): Promise<SheetData<ReadModes[M]>[]> {
+    options: ReadOptions<M, D> = {},
+): Promise<SheetData<ReadModes<DateOf<D>>[M]>[]> {
     const reader = await openXlsx(source, options);
-    const sheets: SheetData<ReadModes[M]>[] = [];
+    const sheets: SheetData<ReadModes<DateOf<D>>[M]>[] = [];
     for (const sheet of reader.sheets) sheets.push(await sheet.read());
     return sheets;
 }
 
-export type { ReadMode, ReadRow, ReadValue, SheetData, StyledCell };
+export type {
+    DateContext,
+    DateOf,
+    DateOption,
+    DateReader,
+    DateReaderName,
+    ReadMode,
+    ReadRow,
+    ReadValue,
+    SheetData,
+    StyledCell,
+};

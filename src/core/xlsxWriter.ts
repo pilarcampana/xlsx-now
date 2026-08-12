@@ -12,6 +12,7 @@ import {
     type SheetOptions,
 } from './command.js';
 import { columnsMode, type ColumnsMode } from './columns.js';
+import { clockOf, type DateClockOptions } from './dates.js';
 import { MergeTable } from './merges.js';
 import {
     contentTypesXml,
@@ -55,7 +56,7 @@ const PUSH_BATCH_CHARS = 64 * 1024;
 
 const encoder = new TextEncoder();
 
-export interface XlsxWriterOptions extends SheetOptions, DateFormatOptions {
+export interface XlsxWriterOptions extends SheetOptions, DateFormatOptions, DateClockOptions {
     /**
      * Name of the first worksheet; defaults to `Sheet1`. Every other sheet is
      * named by the `#worksheet` command that opens it — and so is the first
@@ -162,6 +163,7 @@ export class XlsxWriter {
         // any sense, not one per class that happens to be one.
         this.types = new ValueTypes(options.types ?? defaultTypes, {
             dates: new DateFormats(options),
+            clock: clockOf(options.dateClock),
         });
         this.styles = new StyleTable(options.styles);
         this.zip = new ZipWriter(sink, options.compressionLevel ?? DEFAULT_COMPRESSION_LEVEL);

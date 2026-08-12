@@ -13,8 +13,16 @@
 // the first entry of the map rather than a case above it, which is the whole
 // test of whether this generalizes: a `Temporal.PlainDate`, a `BigInt`, or a
 // class of the caller's own goes in the same way and costs the same.
-import { excelSerial } from './cell.js';
+import {
+    DEFAULT_CLOCK,
+    kindOf,
+    serialOfParts,
+    type DateClock,
+    type DateKind,
+    type DateParts,
+} from './dates.js';
 import { DEFAULT_DATE_FORMATS, type DateFormats } from './styles.js';
+import { temporalApi, type PlainDate, type PlainDateTime, type PlainTime } from './temporal.js';
 import type { CellType } from './types.js';
 
 /**
@@ -26,14 +34,31 @@ import type { CellType } from './types.js';
  */
 export type NativeValue = string | number | boolean | null | undefined;
 
-/** What the workbook lends a conversion. */
+/**
+ * What the workbook lends a conversion.
+ *
+ * Everything a type might need from the workbook it is being written into,
+ * and nothing about the value itself. It grows by gaining a member, and a
+ * conversion that does not read one is unaffected by it — which is why every
+ * `convert` takes the whole thing rather than the two or three things the
+ * types shipped here happen to want.
+ */
 export interface ConvertContext {
     /**
-     * The formats the workbook's `dateFormat` and `dateTimeFormat` settled on.
-     * A type that is a date in any sense reads them rather than inventing its
-     * own, which is what keeps one workbook writing its dates one way.
+     * The formats the workbook's `dateFormat`, `dateTimeFormat` and
+     * `timeFormat` settled on. A type that is a date in any sense reads them
+     * rather than inventing its own, which is what keeps one workbook writing
+     * its dates one way.
      */
     readonly dates: DateFormats;
+    /**
+     * Which wall clock a `Date` is read as — the workbook's `dateClock`.
+     *
+     * Only a type built on `Date` has anything to ask it: a `Temporal.PlainDate`
+     * *is* a wall clock already, and reading it through a clock would be
+     * answering a question it does not have.
+     */
+    readonly clock: DateClock;
 }
 
 /**
@@ -134,15 +159,105 @@ export type RegisteredHandler = TypeHandler<never>;
 export type TypeMap = ReadonlyMap<TypeKey, RegisteredHandler>;
 
 /**
- * A `Date` as a cell holds it: the serial number, under the format the
- * workbook shows its dates in, measured as that format writes them.
+ * A wall clock as a cell holds it: the serial number, under the format the
+ * workbook shows that kind of value in, measured as that format writes them.
+ *
+ * This is what every date type in this file comes down to, and what a
+ * caller's own one delegates to. The parts and the kind are the two things
+ * only the type itself knows — which fields it has, and whether the day in
+ * them means anything — so they are what it says, and everything after that
+ * is the workbook's.
+ */
+export function partsValue(
+    parts: DateParts,
+    kind: DateKind,
+    { dates }: ConvertContext,
+): ConvertedValue {
+    return { v: serialOfParts(parts), numFmt: dates.for(kind), width: dates.textLength(kind) };
+}
+
+/**
+ * A `Date` as a cell holds it, read as the workbook's clock.
  *
  * Exported because it is what a caller's own date-like type delegates to —
  * `convert: (own, context) => dateValue(own.toDate(), context)` is the whole
  * of a handler for a class that wraps a `Date`.
  */
-export function dateValue(value: Date, { dates }: ConvertContext): ConvertedValue {
-    return { v: excelSerial(value), numFmt: dates.for(value), width: dates.textLength(value) };
+export function dateValue(value: Date, context: ConvertContext): ConvertedValue {
+    const parts = context.clock.parts(value);
+    return partsValue(parts, kindOf(parts), context);
+}
+
+/**
+ * The three `Temporal` types a sheet has somewhere to put, as a cell holds
+ * them.
+ *
+ * They need no clock: a `PlainDate` is a wall clock already, which is exactly
+ * what a serial is, so the conversion is the arithmetic and nothing else.
+ * That is the reason they are worth having — a `Date` written to a sheet has
+ * to answer a question about zones that it cannot answer from itself, and
+ * these never raise it.
+ */
+export function plainDateValue(value: PlainDate, context: ConvertContext): ConvertedValue {
+    // Field by field, and never by spreading the value: a `Temporal` keeps
+    // its fields as getters on the prototype, so `{ ...plainDate }` is an
+    // empty object and a serial worked out from one would be `NaN`.
+    return partsValue(
+        { year: value.year, month: value.month, day: value.day, ...MIDNIGHT },
+        'date',
+        context,
+    );
+}
+
+/** A `Temporal.PlainDateTime`, which is a day and a time of day. */
+export function plainDateTimeValue(
+    value: PlainDateTime,
+    context: ConvertContext,
+): ConvertedValue {
+    const parts: DateParts = {
+        year: value.year,
+        month: value.month,
+        day: value.day,
+        hour: value.hour,
+        minute: value.minute,
+        second: value.second,
+        millisecond: value.millisecond,
+    };
+    // A `PlainDateTime` at midnight is a date as far as a sheet can show it,
+    // and giving it the date-and-time format would print an `00:00:00` the
+    // value does not say. It is also what makes the round trip close: the
+    // whole serial that comes out of it reads back as a `PlainDate`.
+    return partsValue(parts, kindOf(parts), context);
+}
+
+/**
+ * A `Temporal.PlainTime`, on Excel's own day 0 — the day a serial under 1
+ * lands on, which is how a spreadsheet stores a time with no date.
+ */
+export function plainTimeValue(value: PlainTime, context: ConvertContext): ConvertedValue {
+    return partsValue({ ...DAY_ZERO, ...timeOf(value) }, 'time', context);
+}
+
+/**
+ * The day a bare time is stored on: serial 0, which is 31/12/1899 — the day
+ * `partsOfSerial` sends a serial under 1 back to, so a `PlainTime` written
+ * here reads back as the same `PlainTime`.
+ */
+const DAY_ZERO = { year: 1899, month: 12, day: 31 } as const;
+/** The time of day a bare date is stored at. */
+const MIDNIGHT = { hour: 0, minute: 0, second: 0, millisecond: 0 } as const;
+
+/** The four time fields of a `Temporal`, without the ones a sheet cannot hold. */
+function timeOf(value: PlainTime): Omit<DateParts, 'year' | 'month' | 'day'> {
+    // Microseconds and nanoseconds are dropped, and there is nowhere to put
+    // them: a serial is a fraction of a day held in a double, and a
+    // millisecond is already the last digit it keeps.
+    return {
+        hour: value.hour,
+        minute: value.minute,
+        second: value.second,
+        millisecond: value.millisecond,
+    };
 }
 
 /**
@@ -175,18 +290,52 @@ export function urlValue(value: URL): ConvertedValue {
 }
 
 /**
- * The types a workbook knows when it was told nothing.
+ * The types every runtime has, which is what a workbook knows before
+ * `Temporal` is looked for.
  *
  * `Date` is one entry among the others on purpose. What is not here is as much
  * of a decision: a `Map`, a `Set`, a nested array or a class nobody registered
  * has no one right way to be written down, so it is refused by name rather
  * than written out as whatever `String()` makes of it.
  */
-export const defaultTypes: TypeMap = new Map<TypeKey, RegisteredHandler>([
+export const BUILTIN_TYPES: TypeMap = new Map<TypeKey, RegisteredHandler>([
     [Date, { convert: dateValue }],
     [BigInt, { convert: bigintValue }],
     [URL, { convert: urlValue }],
 ]);
+
+/**
+ * The same types, and the three `Temporal` ones a sheet can hold — when this
+ * runtime has a `Temporal` to take them from.
+ *
+ * `PlainDate`, `PlainDateTime` and `PlainTime` and no others, because the
+ * others each raise a question a sheet has no room for the answer to. A
+ * `ZonedDateTime` and an `Instant` carry a zone, and flattening one to the
+ * wall clock a cell holds is a decision about which zone, not a conversion; a
+ * `Duration` is not a point in time at all; a `PlainYearMonth` and a
+ * `PlainMonthDay` are a date with a piece missing, and a sheet numbers whole
+ * days. Every one of them is a `withType` away for a caller who knows which
+ * answer they want — which is what that is for.
+ *
+ * Called at import, and again by anyone who needs it later: a polyfill is a
+ * module and modules run in whatever order the imports say, so a `Temporal`
+ * that arrives after this file did is a real case and not a hypothetical.
+ * `withTemporalTypes(defaultTypes)` is the way back for it.
+ */
+export function withTemporalTypes(base: TypeMap = BUILTIN_TYPES): TypeMap {
+    const api = temporalApi();
+    if (api === undefined) return base;
+    return new Map(base)
+        .set(api.PlainDate, { convert: plainDateValue } as RegisteredHandler)
+        .set(api.PlainDateTime, { convert: plainDateTimeValue } as RegisteredHandler)
+        .set(api.PlainTime, { convert: plainTimeValue } as RegisteredHandler);
+}
+
+/**
+ * The types a workbook knows when it was told nothing: the built-in ones, and
+ * `Temporal`'s if this runtime had them when the package was imported.
+ */
+export const defaultTypes: TypeMap = withTemporalTypes();
 
 /**
  * The same types, and one more.
@@ -255,7 +404,7 @@ export class ValueTypes {
 
     constructor(
         types: TypeMap = defaultTypes,
-        context: ConvertContext = { dates: DEFAULT_DATE_FORMATS },
+        context: ConvertContext = { dates: DEFAULT_DATE_FORMATS, clock: DEFAULT_CLOCK },
     ) {
         let objectHandler: RegisteredHandler | undefined;
         for (const [type, handler] of types) {
