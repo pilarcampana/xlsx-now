@@ -4,7 +4,6 @@ import type { NativeValue } from './valueTypes.js';
 // Days between 1900-01-01 and 1970-01-01 (Excel's epoch quirk on Windows).
 const EXCEL_EPOCH_OFFSET_DAYS = 25569;
 const MS_PER_DAY = 86400000;
-const MS_PER_MINUTE = 60000;
 
 /**
  * The serial Excel gives to a day that never happened.
@@ -146,6 +145,19 @@ export function serialKind(serial: number): DateKind {
     return Number.isInteger(serial) ? 'date' : 'dateTime';
 }
 
+function toLocalISOString(date:Date) {
+  const pad = (n:number, len = 2) => String(n).padStart(len, '0');
+  return (
+    date.getFullYear() +
+    '-' + pad(date.getMonth() + 1) +
+    '-' + pad(date.getDate()) +
+    'T' + pad(date.getHours()) +
+    ':' + pad(date.getMinutes()) +
+    ':' + pad(date.getSeconds()) +
+    '.' + pad(date.getMilliseconds(), 3)
+  );
+}
+
 /**
  * A `Date` as the serial number a sheet stores, read by the clock `dates`
  * asks for.
@@ -166,7 +178,7 @@ export function excelSerial(value: Date, dates: WriteDates = 'local'): number {
     const wall =
         dates === 'utc'
             ? value.getTime()
-            : value.getTime() - value.getTimezoneOffset() * MS_PER_MINUTE;
+            : new Date(toLocalISOString(value)+'Z').getTime()
     const days = wall / MS_PER_DAY + EXCEL_EPOCH_OFFSET_DAYS;
     // Days counted from 1899-12-30, which is the numbering Excel uses from
     // 01/03/1900 on. Before that its own count is one lower, because of the
@@ -229,19 +241,12 @@ export function fromExcelSerialUtc(serial: number): Date {
  * `2024-01-15 00:00` to whoever asks it, wherever they are.
  */
 export function fromExcelSerial(serial: number): Date {
-    const wall = fromExcelSerialUtc(serial).getTime();
-    // `wall` is the wall clock read as if it were UTC, and the instant that
-    // shows that wall clock is it plus whatever the zone's offset is *at that
-    // instant* — which is what makes this a fixed point rather than a sum:
-    // the offset depends on the date it is being applied to.
-    //
-    // The first guess reads the offset up to fourteen hours away from the
-    // right instant, which only matters near a daylight saving change; the
-    // second reads it within an hour, which settles every case except the
-    // hour a zone skips over — and that one is a wall clock that never
-    // happened, so it has no exact answer to arrive at.
-    const guess = new Date(wall + new Date(wall).getTimezoneOffset() * MS_PER_MINUTE);
-    return new Date(wall + guess.getTimezoneOffset() * MS_PER_MINUTE);
+    const wall = fromExcelSerialUtc(serial);
+    const match = wall.toISOString().match(/(\d+)-(\d+)-(\d+)[ T]+(\d+):(\d+):(\d+)(?:\.(\d*))/)
+    return match ?
+        // @ts-ignore
+        new Date(match[1],match[2]-1,match[3],match[4],match[5],match[6],match[7]??0)
+        : (() => {throw new Error('NO DATE')})();
 }
 
 /**

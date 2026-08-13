@@ -75,8 +75,18 @@ describe('XlsxWriter: the package it writes', () => {
 });
 
 describe('XlsxWriter: the rows mode', () => {
-    it('writes one row per array, numbered from 1', async () => {
+    it('writes one row per array, numbered from 1 - utc', async () => {
         const rows: CellRow[] = [['a', 1], [true, new Date(0)]];
+        const { sheet } = await readXlsx(write({dates:'utc'}, rows));
+        assert.deepEqual(sheetRows(sheet), [
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c>' +
+                '<c r="B1"><v>1</v></c></row>',
+            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" s="1"><v>25569</v></c></row>',
+        ]);
+    });
+
+    it('writes one row per array, numbered from 1 - local', async () => {
+        const rows: CellRow[] = [['a', 1], [true, new Date(1970,1-1,1)]];
         const { sheet } = await readXlsx(write({}, rows));
         assert.deepEqual(sheetRows(sheet), [
             '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c>' +
