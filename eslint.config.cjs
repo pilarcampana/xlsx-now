@@ -2,7 +2,7 @@
 
 module.exports = [
     {
-        ignores: ["dist/**", "rollup.config.mjs"]
+        ignores: ["dist/**", "rollup.config.mjs", "dist-test/**"]
     },
     {
         languageOptions: {
