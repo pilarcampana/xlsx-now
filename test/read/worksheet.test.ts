@@ -25,6 +25,9 @@ function context(overrides: Partial<CellContext>): CellContext {
     return { ...PLAIN, ...overrides };
 }
 
+/** The same, reading its dates as Temporal values. */
+const TEMPORAL: CellContext = { ...PLAIN, dates: 'temporal' };
+
 /** A cell as the file spells it, with everything it does not say left out. */
 function raw(cell: Partial<RawCell>): RawCell {
     return { type: undefined, style: undefined, value: undefined, formula: undefined, ...cell };
@@ -107,6 +110,37 @@ describe('cellValue', () => {
         assert.equal(
             cellValue(raw({ type: 'd', value: '2024-01-15' }), context({ dates: 'isoString' })),
             '2024-01-15',
+        );
+        assert.equal(
+            String(cellValue(raw({ type: 'd', value: '2024-01-15' }), TEMPORAL)),
+            '2024-01-15',
+        );
+        assert.equal(
+            String(cellValue(raw({ type: 'd', value: '2024-01-15T12:30:00' }), TEMPORAL)),
+            '2024-01-15T12:30:00',
+        );
+    });
+
+    it('reads a day the serial cannot number, which is what that cell is for', () => {
+        // There is no negative serial, so a date before 31/12/1899 has nothing
+        // to be numbered as and the text is the only way a file can hold it.
+        assert.equal(
+            String(cellValue(raw({ type: 'd', value: '1850-06-20' }), TEMPORAL)),
+            '1850-06-20',
+        );
+        assert.equal(
+            cellValue(raw({ type: 'd', value: '1850-06-20' }), context({ dates: 'isoString' })),
+            '1850-06-20',
+        );
+        const local = cellValue(raw({ type: 'd', value: '1850-06-20' }), PLAIN);
+        assert.ok(local instanceof Date);
+        assert.deepEqual([local.getFullYear(), local.getMonth(), local.getDate()], [1850, 5, 20]);
+    });
+
+    it('says what a date cell holds when it does not hold a date', () => {
+        assert.throws(
+            () => cellValue(raw({ type: 'd', value: 'ayer' }), PLAIN),
+            /A date cell holds "ayer"/,
         );
     });
 

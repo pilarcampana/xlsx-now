@@ -10,9 +10,9 @@
 // one is the honest limit of how little a reader can hold, and it is the
 // format's doing — a cell says `<v>7</v>` and means the seventh entry of a
 // table it does not carry.
-import { columnIndex, excelSerial } from '../cell.js';
+import { columnIndex } from '../cell.js';
 import type { CellType, StyledCell } from '../types.js';
-import { readDate, type ReadDates } from './dates.js';
+import { readDate, readIsoDate, type ReadDates } from './dates.js';
 import type { NumberFormats } from './numberFormats.js';
 import type { ReadRow, ReadValue } from './types.js';
 import { XmlParser } from './xml.js';
@@ -67,13 +67,6 @@ function dateOf(serial: number, context: CellContext): ReadValue {
 }
 
 /**
- * An ISO text that needs a `Z` to be read as UTC: one with a time of day and
- * no zone of its own. A date on its own is already read as UTC by `Date`, and
- * one that says its zone has said it.
- */
-const NEEDS_UTC = /T[\d:.]+$/;
-
-/**
  * A cell as its value.
  *
  * The types are the file's own: `s` points into the shared strings, `b` is a
@@ -111,21 +104,12 @@ export function cellValue(raw: RawCell, context: CellContext): ReadValue {
         case 'inlineStr':
         case 'e':
             return raw.value;
-        case 'd': {
-            // The one cell that spells its date out instead of numbering it.
-            // What it holds is a wall clock like every other date in a sheet —
-            // a zone is not the sheet's to have — so a text that leaves one
-            // out is read as UTC rather than as the reader's own clock, and
-            // from there it is the same serial as any other date cell.
-            const text = raw.value;
-            const date = new Date(NEEDS_UTC.test(text) ? `${text}Z` : text);
-            if (Number.isNaN(date.getTime())) {
-                throw new Error(`A date cell holds "${text}", which is not a date.`);
-            }
-            // Not through `dateOf`: the text names its day outright, so the
-            // 1904 epoch has nothing to shift here.
-            return readDate(excelSerial(date, 'utc'), context.dates);
-        }
+        case 'd':
+            // The cell that spells its date out instead of numbering it, which
+            // is what a day the serial cannot number has to be written as. It
+            // never becomes one: see `readIsoDate` — and the 1904 epoch has
+            // nothing to shift in a text that names its own day.
+            return readIsoDate(raw.value, context.dates);
         default:
             throw new Error(`A cell says it holds "${raw.type}", which is not a type a sheet has.`);
     }

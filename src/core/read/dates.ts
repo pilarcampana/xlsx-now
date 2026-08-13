@@ -83,3 +83,41 @@ function timeOf(iso: string): string {
     const time = iso.slice(11, 23);
     return time.endsWith('.000') ? time.slice(0, -4) : time;
 }
+
+/** A zone written next to a date: a `Z`, or an offset from it. */
+const ZONE = /(?:[Zz]|[+-]\d\d:?\d\d)$/;
+
+/**
+ * The other kind of date cell: the one that spells its day out in ISO text
+ * instead of numbering it.
+ *
+ * It goes nowhere near a serial, and that is the point of it. A serial is what
+ * a sheet stores a date as and what this reader is built around, but it cannot
+ * number a day before 31/12/1899 — there is no negative serial — so a file
+ * that has one has nothing else to write it as. Turning the text into a serial
+ * here would throw away the one thing the text can do that the number cannot.
+ *
+ * So the text is what each mode is built from, the same way the serial is
+ * above: `Temporal` takes it as it is written, and `Date` is what checks it.
+ * A zone on the text is dropped rather than applied — a sheet has no time
+ * zone, so a `Z` there is not something the cell can mean — and what is left
+ * is the wall clock every other date in the file is too.
+ */
+export function readIsoDate(text: string, dates: ReadDates): ReadValue {
+    const wall = text.replace(ZONE, '');
+    if (dates === 'temporal') {
+        const temporal = requireTemporal();
+        return wall.includes('T')
+            ? temporal.PlainDateTime.from(wall)
+            : temporal.PlainDate.from(wall);
+    }
+    // A day on its own gets a midnight, so that `localDate` reads it as one:
+    // `Date` takes a bare date as UTC and a date with an hour on it as local,
+    // and only the second of those is what that mode means.
+    const full = wall.includes('T') ? wall : `${wall}T00:00:00`;
+    const date = new Date(dates === 'utcDate' ? `${full}Z` : full);
+    if (Number.isNaN(date.getTime())) {
+        throw new Error(`A date cell holds "${text}", which is not a date.`);
+    }
+    return dates === 'isoString' ? wall : date;
+}

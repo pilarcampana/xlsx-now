@@ -1256,6 +1256,14 @@ Both directions know about it. The one serial with no answer is 60 — the
 phantom day itself — and it is refused rather than given one of its
 neighbours, which would make two different serials read as the same date.
 
+And there is no serial at all below 31/12/1899: the numbering starts there and
+does not go negative. A file with an older date has nothing to number it as,
+so it writes the day out in ISO text instead — the `t="d"` cell of the spec,
+which Excel itself does not write and which the reader takes for exactly that
+reason. It never becomes a serial on the way in: the text goes straight to
+whichever of the four `dates` was asked for, so `1850-06-20` reads as the day
+it says under all of them.
+
 ### Where the bytes come from
 
 `readXlsx` takes a `Uint8Array`, and on both platforms there is a way to hand
