@@ -17,8 +17,24 @@ export {
 } from './command.js';
 export type { ColumnFormat, ColumnFormats, RowOptions } from './sheet.js';
 export {
+    excelSerial,
+    fromExcelSerial,
+    fromExcelSerialUtc,
+    serialKind,
+    type DateKind,
+    type WriteDates,
+} from './cell.js';
+export {
+    temporalApi,
+    type PlainDate,
+    type PlainDateTime,
+    type PlainTime,
+    type TemporalApi,
+} from './temporal.js';
+export {
     DEFAULT_DATE_FORMAT,
     DEFAULT_DATETIME_FORMAT,
+    DEFAULT_TIME_FORMAT,
     DateFormats,
     StyleTable,
     argb,
@@ -35,6 +51,10 @@ export {
     bigintValue,
     dateValue,
     defaultTypes,
+    plainDateTimeValue,
+    plainDateValue,
+    plainTimeValue,
+    serialValue,
     shownWidth,
     urlValue,
     withType,
@@ -64,4 +84,5 @@ export {
     type XlsxSource,
 } from './read/readXlsx.js';
 export { bytesAccess, type RandomAccess } from './read/randomAccess.js';
+export { readDate, type ReadDates } from './read/dates.js';
 export type { ReadMode, ReadModes, ReadRow, ReadValue, SheetData } from './read/types.js';

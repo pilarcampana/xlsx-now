@@ -515,7 +515,8 @@ gets one. A style that says `numFmt` is left alone — asking for a format is
 how a caller says it wants that one.
 
 A `Date` is an entry of [`types`](#types-the-workbook-knows-types) like any
-other, and the two options below are what its conversion reads.
+other — and so are `Temporal.PlainDate` and the two next to it, where the
+environment has them — and the options below are what their conversions read.
 
 **There is no preview to write.** A date cell holds two things: the serial
 number, and the id of a format. Nothing in the file says what the day *looks
@@ -541,8 +542,9 @@ createXlsxStream({ dateFormat: 'dd/mm/yyyy', rows });   // one country's own
 
 | option | what it is | default |
 | --- | --- | --- |
-| `dateFormat` | a `Date` with no time of day | `14`, the built-in short date |
-| `dateTimeFormat` | a `Date` that carries one | `dateFormat` + ` hh:mm:ss` |
+| `dateFormat` | a date with no time of day | `14`, the built-in short date |
+| `dateTimeFormat` | a date that carries one | `dateFormat` + ` hh:mm:ss` |
+| `timeFormat` | a time of day with no date | `21`, the built-in `h:mm:ss` |
 
 The time of day is added to `dateFormat` on its own, so only the date is ever
 asked for: an hour is written the same way everywhere and the order of a day
@@ -562,12 +564,59 @@ that wants them shown under a local date says so:
 built-in that is the reader's business, so what it measures is the widest a
 short date runs to.
 
-The serial is the **wall clock the caller reads**, not the UTC instant. A
-sheet has no time zone: `new Date(2024, 0, 15)` in Buenos Aires has to come
-out of the file reading `2024-01-15`, and taking `getTime()` for the serial
-would write `2024-01-14 21:00`. So the date's own `getTimezoneOffset()` —
-daylight saving and all — is taken off first, and what gets written is the
-same reading `getFullYear()` and `getHours()` give.
+**Which format a value gets is decided by the number**, and by nothing else: a
+whole serial is a day, a fraction of one is the day and the hour in it, and a
+serial under `1` is a time of day with no day left — `0.4375` is half past ten
+in the morning and nothing else. The reader decides the same way, from the same
+number, which is what makes a date read back the way it was written.
+
+#### `dates`: which clock a `Date` is read by
+
+A sheet has no time zone and a `Date` is an instant, so writing one down means
+picking the clock that reads it. There are two answers and `dates` is where the
+workbook says which:
+
+```js
+createXlsxStream({ rows });                  // 'local', the default
+createXlsxStream({ dates: 'utc', rows });    // the UTC clock instead
+```
+
+| `dates` | the serial is what the date reads as under |
+| --- | --- |
+| `local` | `getFullYear()`, `getHours()` — the caller's own clock |
+| `utc` | `getUTCFullYear()`, `getUTCHours()` |
+
+`local` is the default because it is what a date built from a calendar means:
+`new Date(2024, 0, 15)` in Buenos Aires has to come out of the file reading
+`2024-01-15`, and taking `getTime()` for the serial would write
+`2024-01-14 21:00`. So the date's own `getTimezoneOffset()` — daylight saving
+and all — is taken off first, and what gets written is the same reading
+`getFullYear()` and `getHours()` give.
+
+`utc` is for the dates that were never a local calendar: an instant out of a
+database, an ISO text with a `Z` on it, a timestamp from an API. There the
+offset step is exactly what is wrong, and skipping it is the whole of what this
+option does.
+
+#### `Temporal` needs no option at all
+
+A `Temporal.PlainDate`, a `PlainDateTime` and a `PlainTime` are wall clocks
+already — no instant, no zone, nothing to pick — so they go in as they read,
+whatever `dates` says:
+
+```js
+createXlsxStream({ rows: [[Temporal.PlainDate.from('2024-01-15')]] });
+```
+
+| written | the serial | shown under |
+| --- | --- | --- |
+| `Temporal.PlainDate` | the day | `dateFormat` |
+| `Temporal.PlainDateTime` | the day and the fraction of it | `dateTimeFormat` |
+| `Temporal.PlainTime` | the fraction alone | `timeFormat` |
+
+They are entries of [`types`](#types-the-workbook-knows-types) like `Date` is,
+added when the environment has a `Temporal` — native, or a polyfill imported
+before the workbook is written.
 
 ### Types the workbook knows: `types`
 
@@ -575,7 +624,7 @@ A sheet holds four things: a number, a boolean, a string, or nothing. Anything
 else has to become one of them on the way in, and `types` is where a workbook
 is told how.
 
-It is a `Map` from a class to the conversion for it. `defaultTypes` is what a
+It is a `Map` from a class to the conversion for it. `defaultTypes()` is what a
 workbook uses when it is told nothing, and `withType` builds one map from
 another:
 
@@ -588,7 +637,7 @@ class HourRange {
 }
 
 // Once, wherever the application's own types live:
-export const appTypes = withType(defaultTypes, HourRange, {
+export const appTypes = withType(defaultTypes(), HourRange, {
     convert: (range) => ({ v: range.toString() }),
 });
 
@@ -623,7 +672,7 @@ measuring `v` there is not measuring imprecisely — it is measuring the wrong
 thing. A duration written as a fraction of a day is the clearest case:
 
 ```js
-withType(defaultTypes, Interval, {
+withType(defaultTypes(), Interval, {
     convert: (interval) => ({ v: interval.ms / 86400000, numFmt: '[h]:mm:ss' }),
 });
 ```
@@ -644,8 +693,16 @@ a conversion that knows its own magnitude says so, as `dateValue` does.
 | class | written as |
 | --- | --- |
 | `Date` | the serial, under [the workbook's date formats](#dates) |
+| `Temporal.PlainDate` | the day, as the serial of it |
+| `Temporal.PlainDateTime` | the day and the time in it |
+| `Temporal.PlainTime` | the fraction of a day a sheet stores a time as |
 | `BigInt` | a number while a cell can hold one exactly, text past that |
 | `URL` | its `href` |
+
+The three `Temporal` entries are there when the environment has a `Temporal`,
+and that is why `defaultTypes` is a function and not the map itself: a polyfill
+is installed by importing it, and nothing says that import ran before this
+package was loaded. So the map is built when a workbook is.
 
 `Date` is one entry among the others and not a case above them, which is the
 whole test of whether this generalizes: a class of your own goes in the same
@@ -654,7 +711,7 @@ so a type of yours that is a date in any sense reads the same `dateFormat`
 everything else does — `dateValue` is exported for exactly that:
 
 ```js
-withType(defaultTypes, Timestamp, {
+withType(defaultTypes(), Timestamp, {
     convert: (own, context) => dateValue(own.toDate(), context),
 });
 ```
@@ -678,7 +735,7 @@ so none of them is written out as whatever `String()` makes of it:
 
 ```
 A cell is a value of a type the workbook knows, and "HourRange" is not one of
-them: add it to the writer's "types", with withType(defaultTypes, ...).
+them: add it to the writer's "types", with withType(defaultTypes(), ...).
 ```
 
 The lookup walks the prototype chain, so `class Timestamp extends Date` needs
@@ -1105,7 +1162,7 @@ import { readXlsx } from 'xlsx-now';
 
 const sheets = await readXlsx(bytes);
 sheets[0].name        // 'Ventas'
-sheets[0].cells       // [['fecha', 'importe'], [Date, 1234.5], ...]
+sheets[0].cells       // [['fecha', 'importe'], [PlainDate, 1234.5], ...]
 sheets[0].maxRow      // 2
 sheets[0].maxCol      // 2
 ```
@@ -1126,7 +1183,7 @@ is `null`. The same difference the writer makes on the way in.
 ```js
 const [sheet] = await readXlsx(bytes, { mode: 'cells' });
 sheet.cells[1][1]     // { v: 1234.5, s: { numFmt: '#,##0.00' } }
-sheet.cells[1][0]     // { v: 2024-01-15T00:00:00, s: { numFmt: 14 } }
+sheet.cells[1][0]     // { v: PlainDate 2024-01-15, s: { numFmt: 14 } }
 sheet.cells[2][1]     // { v: 3, f: 'SUM(B2:B3)' }
 ```
 
@@ -1138,18 +1195,57 @@ be read, changed and written again without anything in the middle knowing what
 a number format is. `t` is only set where the writer would not work it out on
 its own: the cached string result of a formula, and an error.
 
-### Dates, and the day that never was
+### Dates: `dates`, and the day that never was
 
 A date in a sheet is a number; the only thing that makes it a date is the
 number format its style points at. So the reader parses `styles.xml` — the one
 part of the styling it does read — for exactly two questions: which format
 each style shows, and whether that format writes a date. A number under one
-comes back as a `Date`, and the same number under a plain format stays a
-number.
+comes back as a date, and the same number under a plain format stays a number.
 
-The wall clock is what survives, not the instant: a cell that reads
-`15/01/2024 00:00` gives a `Date` that reads `15/01/2024 00:00` wherever it is
-read, the same way the writer writes one.
+*Which* date is the `dates` option, and there are four answers to the one
+number:
+
+```js
+await readXlsx(bytes);                          // Temporal values, the default
+await readXlsx(bytes, { dates: 'localDate' });  // Dates on the caller's clock
+```
+
+| `dates` | `45306` | `45306.5` | `0.4375` |
+| --- | --- | --- | --- |
+| `temporal` | `Temporal.PlainDate` | `Temporal.PlainDateTime` | `Temporal.PlainTime` |
+| `utcDate` | `Date`, read in UTC | the same | the same |
+| `localDate` | `Date`, read locally | the same | the same |
+| `isoString` | `'2024-01-15'` | `'2024-01-15T12:00:00'` | `'10:30:00'` |
+
+**`temporal` is the default**, because it is the only one of the four that
+gives back what the file actually says. A sheet holds a wall clock and nothing
+else: a day with no hour, an hour with no day, no zone anywhere. That is what
+the three `Plain` classes are, one for each, and there is no instant in them
+to be wrong about. It needs a `Temporal` in the environment — native, or a
+polyfill imported before the workbook is opened — and when there is none,
+`openXlsx` says so before it reads a row:
+
+```
+Dates are read as Temporal values and this environment has no
+Temporal.PlainDate: run where there is one, install a polyfill, or say how
+dates should be built with dates: "utcDate", "localDate" or "isoString".
+```
+
+**Which of the three a number becomes is the number's own doing**: a whole
+serial is a day, a fraction of one is the day and the hour in it, and a serial
+under `1` is a time with no day left. It is the same rule the writer picks a
+date format by, from the same number, which is what makes a date read back the
+way it was written.
+
+**The two `Date` modes are the same wall clock said twice.** Under `utcDate` a
+cell that reads `15/01/2024 12:00` gives the instant `2024-01-15T12:00:00Z`,
+whatever zone the reader runs in; under `localDate` it gives the instant whose
+*local* reading is `15/01/2024 12:00`, which is the date the writer takes back
+by default and the only one of the four that depends on where it is read.
+
+**`isoString` is the text the `temporal` values are built from**, for whoever
+wants the wall clock and no class at all.
 
 Two epochs and one bug are handled. `date1904`, which a workbook that came
 from a Macintosh Excel still declares, shifts every serial by 1462 days. And
@@ -1552,11 +1648,6 @@ columns — fails the freeze check.
   Access API.** Firefox/Safari don't support `showSaveFilePicker`, so on
   those the current fallback still generates incrementally but has to
   materialize a `Blob` before the browser's normal download flow can start.
-- **`Temporal` out of the box.** `Temporal.PlainDate` and the rest are exactly
-  what [`types`](#types-the-workbook-knows-types) is for, and adding them is a
-  `withType` away — but they are not in `defaultTypes`, because this
-  repository's Node and its `lib` setting have neither the runtime nor the
-  types to write them against and test them.
 - **Shared formulas and array formulas.** A cell's `f` is its own; the
   `shared`/`array` forms, where one expression covers a range, are not
   emitted. Nothing about them is ruled out by the design. Reading one back is

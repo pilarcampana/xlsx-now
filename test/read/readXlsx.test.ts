@@ -2,10 +2,14 @@
 // writes, ones built by hand here, and one written by `exceljs` — which is
 // the only one of the three that had nothing to do with this repository, and
 // so the only one that can say the reader agrees with anything but itself.
+import 'temporal-polyfill/global';
 import assert from 'node:assert/strict';
+import { Temporal } from 'temporal-polyfill';
 import ExcelJS from 'exceljs';
 import { createXlsxStream, type CreateXlsxStreamOptions } from '../../src/core/createXlsxStream.js';
 import { openXlsx, readXlsx } from '../../src/core/read/readXlsx.js';
+import type { ReadDates } from '../../src/core/read/dates.js';
+import type { ReadValue } from '../../src/core/read/types.js';
 import type { StyledCell } from '../../src/core/types.js';
 import { stylesOf, xlsxPackage, zipOf } from '../helpers/package.js';
 import { collect } from '../helpers/streams.js';
@@ -36,10 +40,69 @@ describe('readXlsx: what this package wrote', () => {
     it('reads a date back as the same date', async () => {
         const dates = [new Date(2024, 0, 15), new Date(2024, 6, 1, 12, 30), new Date(1900, 0, 1)];
         const bytes = await written({ rows: [dates] });
-        const [sheet] = await readXlsx(bytes);
+        // The writer reads a `Date` by the local clock and `localDate` is the
+        // same clock the other way round, so this is the round trip.
+        const [sheet] = await readXlsx(bytes, { dates: 'localDate' });
         assert.deepEqual(
             sheet?.cells[0]?.map((value) => (value as Date).getTime()),
             dates.map((date) => date.getTime()),
+        );
+    });
+
+    it('reads a date as a Temporal value when nothing said otherwise', async () => {
+        const bytes = await written({
+            rows: [
+                [
+                    Temporal.PlainDate.from('2024-01-15'),
+                    Temporal.PlainDateTime.from('2024-01-15T12:00'),
+                    Temporal.PlainTime.from('10:30'),
+                ],
+            ],
+        });
+        const [sheet] = await readXlsx(bytes);
+        assert.deepEqual(
+            sheet?.cells[0]?.map((value) => String(value)),
+            ['2024-01-15', '2024-01-15T12:00:00', '10:30:00'],
+        );
+        const [day, when, time] = sheet?.cells[0] ?? [];
+        assert.ok(day instanceof Temporal.PlainDate);
+        assert.ok(when instanceof Temporal.PlainDateTime);
+        assert.ok(time instanceof Temporal.PlainTime);
+    });
+
+    it('reads the same date four ways, and they all say the same thing', async () => {
+        const bytes = await written({ rows: [[Temporal.PlainDateTime.from('2024-01-15T12:00')]] });
+        const cellOf = async (dates: ReadDates): Promise<ReadValue | undefined> =>
+            (await readXlsx(bytes, { dates }))[0]?.cells[0]?.[0];
+
+        assert.equal(String(await cellOf('temporal')), '2024-01-15T12:00:00');
+        assert.equal(await cellOf('isoString'), '2024-01-15T12:00:00');
+        assert.equal((await cellOf('utcDate') as Date).toISOString(), '2024-01-15T12:00:00.000Z');
+        const local = (await cellOf('localDate')) as Date;
+        assert.deepEqual(
+            [local.getFullYear(), local.getMonth(), local.getDate(), local.getHours()],
+            [2024, 0, 15, 12],
+        );
+    });
+
+    it('gives back Temporal values a workbook can be written from again', async () => {
+        const rows = [
+            [
+                Temporal.PlainDate.from('2024-01-15'),
+                Temporal.PlainDateTime.from('2024-01-15T12:00'),
+                Temporal.PlainTime.from('10:30'),
+            ],
+        ];
+        const once = await readXlsx(await written({ rows }), { mode: 'cells' });
+        const again = await readXlsx(await written({ rows: once[0]?.cells ?? [] }), {
+            mode: 'cells',
+        });
+        assert.deepEqual(again[0]?.cells, once[0]?.cells);
+        // And the formats came back with them: a day, a day and an hour, and
+        // an hour on its own are three different things to show.
+        assert.deepEqual(
+            (once[0]?.cells[0] ?? []).map((cell) => (cell as StyledCell).s),
+            [{ numFmt: 14 }, { numFmt: 22 }, { numFmt: 21 }],
         );
     });
 
@@ -84,7 +147,7 @@ describe('readXlsx: what this package wrote', () => {
         const bytes = await written({
             rows: [[{ v: 1234.5, s: { numFmt: '#,##0.00' } }, new Date(2024, 0, 15), 'texto']],
         });
-        const [sheet] = await readXlsx(bytes, { mode: 'cells' });
+        const [sheet] = await readXlsx(bytes, { mode: 'cells', dates: 'localDate' });
         const row = (sheet?.cells[0] ?? []) as StyledCell[];
         assert.deepEqual(row[0], { v: 1234.5, s: { numFmt: '#,##0.00' } });
         assert.deepEqual(row[1]?.s, { numFmt: 14 });
@@ -92,7 +155,10 @@ describe('readXlsx: what this package wrote', () => {
 
         // And what came out goes back in and reads the same, which is what
         // makes the two modes one round trip rather than two shapes.
-        const again = await readXlsx(await written({ rows: [row] }), { mode: 'cells' });
+        const again = await readXlsx(await written({ rows: [row] }), {
+            mode: 'cells',
+            dates: 'localDate',
+        });
         assert.deepEqual(again[0]?.cells[0], sheet?.cells[0]);
     });
 
@@ -139,7 +205,7 @@ describe('readXlsx: files built by hand', () => {
             styles: stylesOf([14]),
             workbookPr: 'date1904="1"',
         });
-        const [sheet] = await readXlsx(bytes);
+        const [sheet] = await readXlsx(bytes, { dates: 'localDate' });
         const date = sheet?.cells[0]?.[0] as Date;
         assert.equal(date.getFullYear(), 2024);
         assert.equal(date.getMonth(), 0);
@@ -213,13 +279,14 @@ describe('readXlsx: what exceljs wrote', () => {
         const bytes = await byExcelJs((sheet) => {
             sheet.addRow([when]);
         });
-        const [sheet] = await readXlsx(bytes);
+        const [sheet] = await readXlsx(bytes, { dates: 'utcDate' });
         const read = sheet?.cells[0]?.[0] as Date;
         assert.ok(read instanceof Date, 'a date came back as something else');
-        // `exceljs` writes the serial of the UTC clock, so the wall clock that
-        // comes back is that one; what matters here is that a serial under a
-        // date format was read as a date at all, to the millisecond.
-        assert.equal(read.getTime() + read.getTimezoneOffset() * 60000, when.getTime());
+        // `exceljs` writes the serial of the UTC clock, so reading it back by
+        // that same clock is the instant it wrote, to the millisecond — and
+        // what matters here is that a serial under a date format was read as a
+        // date at all.
+        assert.equal(read.getTime(), when.getTime());
     });
 
     it('reads a formula and the value cached with it', async () => {

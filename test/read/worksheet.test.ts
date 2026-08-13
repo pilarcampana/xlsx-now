@@ -12,7 +12,14 @@ import {
 import { stylesOf } from '../helpers/package.js';
 import { asAsyncIterable } from '../helpers/streams.js';
 
-const PLAIN: CellContext = { sharedStrings: [], formats: NO_FORMATS, date1904: false };
+const PLAIN: CellContext = {
+    sharedStrings: [],
+    formats: NO_FORMATS,
+    date1904: false,
+    // The tests below are about what a cell holds, not about what a date is
+    // built as, so they read the one that is a `Date` on the caller's clock.
+    dates: 'localDate',
+};
 
 function context(overrides: Partial<CellContext>): CellContext {
     return { ...PLAIN, ...overrides };
@@ -81,9 +88,26 @@ describe('cellValue', () => {
     });
 
     it('reads a date written out in full, which the spec allows and Excel does not write', () => {
-        const value = cellValue(raw({ type: 'd', value: '2024-01-15T12:30:00Z' }), PLAIN);
-        assert.ok(value instanceof Date);
-        assert.equal(value.toISOString(), '2024-01-15T12:30:00.000Z');
+        // The text is a wall clock like every other date in a sheet, so what
+        // comes back reads half past twelve by whichever clock was asked for —
+        // and a `Z` on the text does not make it an instant the sheet had.
+        const local = cellValue(raw({ type: 'd', value: '2024-01-15T12:30:00Z' }), PLAIN);
+        assert.ok(local instanceof Date);
+        assert.deepEqual([local.getDate(), local.getHours(), local.getMinutes()], [15, 12, 30]);
+
+        const utc = cellValue(
+            raw({ type: 'd', value: '2024-01-15T12:30:00' }),
+            context({ dates: 'utcDate' }),
+        );
+        assert.ok(utc instanceof Date);
+        assert.equal(utc.toISOString(), '2024-01-15T12:30:00.000Z');
+    });
+
+    it('reads a date written out as a day alone', () => {
+        assert.equal(
+            cellValue(raw({ type: 'd', value: '2024-01-15' }), context({ dates: 'isoString' })),
+            '2024-01-15',
+        );
     });
 
     it('is a Date when the format under the number says it is one', () => {

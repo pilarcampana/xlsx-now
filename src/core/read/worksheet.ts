@@ -10,8 +10,9 @@
 // one is the honest limit of how little a reader can hold, and it is the
 // format's doing — a cell says `<v>7</v>` and means the seventh entry of a
 // table it does not carry.
-import { columnIndex, fromExcelSerial } from '../cell.js';
+import { columnIndex, excelSerial } from '../cell.js';
 import type { CellType, StyledCell } from '../types.js';
+import { readDate, type ReadDates } from './dates.js';
 import type { NumberFormats } from './numberFormats.js';
 import type { ReadRow, ReadValue } from './types.js';
 import { XmlParser } from './xml.js';
@@ -36,6 +37,8 @@ export interface CellContext {
     sharedStrings: readonly string[];
     formats: NumberFormats;
     date1904: boolean;
+    /** What a date is built as; see `ReadDates`. */
+    dates: ReadDates;
 }
 
 /** `B12` as the coordinates it names, counting columns from 0 and rows from 1. */
@@ -59,9 +62,16 @@ function numberOf(raw: RawCell): number {
 }
 
 /** The date a serial means, under whichever epoch the workbook counts from. */
-function dateOf(serial: number, context: CellContext): Date {
-    return fromExcelSerial(context.date1904 ? serial + DAYS_1904_TO_1900 : serial);
+function dateOf(serial: number, context: CellContext): ReadValue {
+    return readDate(context.date1904 ? serial + DAYS_1904_TO_1900 : serial, context.dates);
 }
+
+/**
+ * An ISO text that needs a `Z` to be read as UTC: one with a time of day and
+ * no zone of its own. A date on its own is already read as UTC by `Date`, and
+ * one that says its zone has said it.
+ */
+const NEEDS_UTC = /T[\d:.]+$/;
 
 /**
  * A cell as its value.
@@ -102,11 +112,19 @@ export function cellValue(raw: RawCell, context: CellContext): ReadValue {
         case 'e':
             return raw.value;
         case 'd': {
-            const date = new Date(raw.value);
+            // The one cell that spells its date out instead of numbering it.
+            // What it holds is a wall clock like every other date in a sheet —
+            // a zone is not the sheet's to have — so a text that leaves one
+            // out is read as UTC rather than as the reader's own clock, and
+            // from there it is the same serial as any other date cell.
+            const text = raw.value;
+            const date = new Date(NEEDS_UTC.test(text) ? `${text}Z` : text);
             if (Number.isNaN(date.getTime())) {
-                throw new Error(`A date cell holds "${raw.value}", which is not a date.`);
+                throw new Error(`A date cell holds "${text}", which is not a date.`);
             }
-            return date;
+            // Not through `dateOf`: the text names its day outright, so the
+            // 1904 epoch has nothing to shift here.
+            return readDate(excelSerial(date, 'utc'), context.dates);
         }
         default:
             throw new Error(`A cell says it holds "${raw.type}", which is not a type a sheet has.`);

@@ -1,4 +1,5 @@
 import { WidthMeter } from './autoWidth.js';
+import { writeDates, type WriteDates } from './cell.js';
 import {
     checkRecord,
     isLineCommand,
@@ -95,6 +96,22 @@ export interface XlsxWriterOptions extends SheetOptions, DateFormatOptions {
      * changes what this workbook writes.
      */
     types?: TypeMap;
+    /**
+     * Which clock a `Date` is read by on its way into a cell: `local`, the
+     * default, is the one the caller is looking at — what `getFullYear()` and
+     * `getHours()` give — and `utc` is what `getUTCHours()` gives.
+     *
+     * A sheet has no time zone, so writing an instant down means picking the
+     * clock that reads it, and only the caller knows which one their dates
+     * came from: a `Date` built from a local calendar is `local`, and one that
+     * came from an ISO text with a `Z` on it, or from a database that stores
+     * instants, is `utc`.
+     *
+     * It is the only thing this decides. A `Temporal.PlainDate`, a
+     * `PlainDateTime` and a `PlainTime` are wall clocks already and go in as
+     * they read, whatever this says.
+     */
+    dates?: WriteDates;
 }
 
 /**
@@ -160,8 +177,9 @@ export class XlsxWriter {
         // What a date falls back to is the workbook's, and it is what the
         // types are handed: one `dateFormat` for every type that is a date in
         // any sense, not one per class that happens to be one.
-        this.types = new ValueTypes(options.types ?? defaultTypes, {
+        this.types = new ValueTypes(options.types ?? defaultTypes(), {
             dates: new DateFormats(options),
+            clock: writeDates(options.dates),
         });
         this.styles = new StyleTable(options.styles);
         this.zip = new ZipWriter(sink, options.compressionLevel ?? DEFAULT_COMPRESSION_LEVEL);

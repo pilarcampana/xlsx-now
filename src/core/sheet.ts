@@ -273,7 +273,7 @@ function unknownCellError(cell: object): Error {
         const named = constructor?.name ? `"${constructor.name}"` : 'this one';
         return new Error(
             `A cell is a value of a type the workbook knows, and ${named} is not one of them: ` +
-                'add it to the writer\'s "types", with withType(defaultTypes, ...).',
+                'add it to the writer\'s "types", with withType(defaultTypes(), ...).',
         );
     }
     const keys = Object.keys(cell);

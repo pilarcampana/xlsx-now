@@ -11,7 +11,7 @@
 // distinct combination is registered once and reused from then on, so what
 // this holds is bounded by how many different styles the workbook has, not by
 // how many rows it has.
-import { hasTimeOfDay, sanitizeText } from './cell.js';
+import { sanitizeText, type DateKind } from './cell.js';
 
 /**
  * A colour, as hex: `#RGB`, `#RRGGBB`, `RRGGBB` or `AARRGGBB`, with the `#`
@@ -136,6 +136,12 @@ export type StyleRef = string | StyleSpec;
  */
 export const DEFAULT_DATE_FORMAT = 14;
 export const DEFAULT_DATETIME_FORMAT = 22;
+/**
+ * And the built-in for a time of day with no date: `21` is Excel's `h:mm:ss`,
+ * the one of its four time formats that shows the seconds and does not ask the
+ * reader whether it is the morning.
+ */
+export const DEFAULT_TIME_FORMAT = 21;
 
 /**
  * The time of day, added to a date format that carries none — the one part of
@@ -150,7 +156,8 @@ const TIME_OF_DAY = 'hh:mm:ss';
  * date runs to — `dd/mm/yyyy`, and the same with the time after it.
  */
 const BUILTIN_DATE_WIDTH = 10;
-const BUILTIN_DATETIME_WIDTH = BUILTIN_DATE_WIDTH + 1 + TIME_OF_DAY.length;
+const BUILTIN_TIME_WIDTH = TIME_OF_DAY.length;
+const BUILTIN_DATETIME_WIDTH = BUILTIN_DATE_WIDTH + 1 + BUILTIN_TIME_WIDTH;
 
 /** Excel's built-in formats take the ids below this one; ours start here. */
 const FIRST_CUSTOM_NUMFMT = 164;
@@ -171,6 +178,12 @@ export interface DateFormatOptions {
      * to add anything to.
      */
     dateTimeFormat?: string | number;
+    /**
+     * The same, for a value that is a time of day and no date — a serial under
+     * `1`, which is how a sheet stores one, and what a `Temporal.PlainTime`
+     * becomes. Defaults to `21`, Excel's built-in `h:mm:ss`.
+     */
+    timeFormat?: string | number;
 }
 
 /**
@@ -183,10 +196,12 @@ export interface DateFormatOptions {
 export class DateFormats {
     readonly date: string | number;
     readonly dateTime: string | number;
+    readonly time: string | number;
 
-    constructor({ dateFormat, dateTimeFormat }: DateFormatOptions = {}) {
+    constructor({ dateFormat, dateTimeFormat, timeFormat }: DateFormatOptions = {}) {
         this.date = dateFormat ?? DEFAULT_DATE_FORMAT;
         this.dateTime = dateTimeFormat ?? this.impliedDateTime();
+        this.time = timeFormat ?? DEFAULT_TIME_FORMAT;
     }
 
     /** What a timestamp is shown as when only the date format was given. */
@@ -203,20 +218,27 @@ export class DateFormats {
         );
     }
 
-    /** The format this value falls back to: the date, or the date and time. */
-    for(value: Date): string | number {
-        return hasTimeOfDay(value) ? this.dateTime : this.date;
+    /**
+     * The format a value of this kind falls back to. What kind it is comes off
+     * the serial the cell holds — see `serialKind` — or, for a value that says
+     * so itself, off the value: a `Temporal.PlainDate` is a date at midnight
+     * and a `PlainTime` is a time, and neither has to be guessed at.
+     */
+    for(kind: DateKind): string | number {
+        if (kind === 'time') return this.time;
+        return kind === 'dateTime' ? this.dateTime : this.date;
     }
 
     /**
-     * How many characters this value shows. A format code is measured as it
-     * is written, which is what the date under it comes to; a built-in is the
-     * reader's own, so it is measured as the widest one.
+     * How many characters a value of this kind shows. A format code is
+     * measured as it is written, which is what the date under it comes to; a
+     * built-in is the reader's own, so it is measured as the widest one.
      */
-    textLength(value: Date): number {
-        const format = this.for(value);
+    textLength(kind: DateKind): number {
+        const format = this.for(kind);
         if (typeof format === 'string') return format.length;
-        return hasTimeOfDay(value) ? BUILTIN_DATETIME_WIDTH : BUILTIN_DATE_WIDTH;
+        if (kind === 'time') return BUILTIN_TIME_WIDTH;
+        return kind === 'dateTime' ? BUILTIN_DATETIME_WIDTH : BUILTIN_DATE_WIDTH;
     }
 }
 

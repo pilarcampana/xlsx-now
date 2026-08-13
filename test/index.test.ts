@@ -32,7 +32,7 @@ describe('the public surface', () => {
 
     it('exports the types a workbook knows, and the way to add one', () => {
         assert.equal(typeof core.withType, 'function');
-        assert.equal(typeof core.defaultTypes.get(Date)?.convert, 'function');
+        assert.equal(typeof core.defaultTypes().get(Date)?.convert, 'function');
         assert.equal(typeof core.dateValue, 'function');
         assert.equal(typeof core.bigintValue, 'function');
         assert.equal(typeof core.urlValue, 'function');
@@ -45,11 +45,25 @@ describe('the public surface', () => {
         assert.equal(typeof core.bytesAccess, 'function');
     });
 
+    it('exports what a date is made of, on both sides of the file', () => {
+        assert.equal(core.excelSerial(new Date(1970, 0, 1)), 25569);
+        assert.equal(core.fromExcelSerialUtc(25569).toISOString(), '1970-01-01T00:00:00.000Z');
+        assert.equal(core.fromExcelSerial(25569).getFullYear(), 1970);
+        assert.equal(core.serialKind(45306.5), 'dateTime');
+        assert.equal(core.readDate(45306, 'isoString'), '2024-01-15');
+        assert.equal(typeof core.temporalApi, 'function');
+        assert.equal(typeof core.plainDateValue, 'function');
+        assert.equal(typeof core.plainDateTimeValue, 'function');
+        assert.equal(typeof core.plainTimeValue, 'function');
+        assert.equal(typeof core.serialValue, 'function');
+    });
+
     it('exports nothing else', () => {
         assert.deepEqual(Object.keys(core).sort(), [
             'DEFAULT_COMPRESSION_LEVEL',
             'DEFAULT_DATETIME_FORMAT',
             'DEFAULT_DATE_FORMAT',
+            'DEFAULT_TIME_FORMAT',
             'DateFormats',
             'LINE',
             'StyleTable',
@@ -63,11 +77,21 @@ describe('the public surface', () => {
             'createXlsxStream',
             'dateValue',
             'defaultTypes',
+            'excelSerial',
+            'fromExcelSerial',
+            'fromExcelSerialUtc',
             'isLineCommand',
             'isWorksheetCommand',
             'openXlsx',
+            'plainDateTimeValue',
+            'plainDateValue',
+            'plainTimeValue',
+            'readDate',
             'readXlsx',
+            'serialKind',
+            'serialValue',
             'shownWidth',
+            'temporalApi',
             'urlValue',
             'withType',
         ]);

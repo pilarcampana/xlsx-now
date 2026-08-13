@@ -1,10 +1,13 @@
+import 'temporal-polyfill/global';
 import assert from 'node:assert/strict';
+import { Temporal } from 'temporal-polyfill';
 import { columnWidth, WidthMeter } from '../src/core/autoWidth.js';
 import { cellRowXml } from '../src/core/sheet.js';
 import {
     DateFormats,
     DEFAULT_DATETIME_FORMAT,
     DEFAULT_DATE_FORMAT,
+    DEFAULT_TIME_FORMAT,
     StyleTable,
 } from '../src/core/styles.js';
 import type { CellRow } from '../src/core/types.js';
@@ -12,16 +15,23 @@ import {
     bigintValue,
     dateValue,
     defaultTypes,
+    plainDateTimeValue,
+    plainDateValue,
+    plainTimeValue,
+    serialValue,
     shownWidth,
     urlValue,
     ValueTypes,
     withType,
     type ConvertedValue,
+    type ConvertContext,
     type TypeMap,
 } from '../src/core/valueTypes.js';
 
 /** The context a workbook that said nothing about its dates hands out. */
-const PLAIN = { dates: new DateFormats() };
+const PLAIN: ConvertContext = { dates: new DateFormats(), clock: 'local' };
+/** The same workbook, reading its `Date`s by the UTC clock instead. */
+const UTC: ConvertContext = { dates: new DateFormats(), clock: 'utc' };
 
 describe('dateValue', () => {
     it('writes a Date as an Excel serial number', () => {
@@ -39,7 +49,10 @@ describe('dateValue', () => {
     });
 
     it('takes the formats the workbook it belongs to uses', () => {
-        const context = { dates: new DateFormats({ dateFormat: 'yyyy-mm-dd' }) };
+        const context: ConvertContext = {
+            dates: new DateFormats({ dateFormat: 'yyyy-mm-dd' }),
+            clock: 'local',
+        };
         assert.equal(dateValue(new Date(2024, 0, 15), context).numFmt, 'yyyy-mm-dd');
         assert.equal(
             dateValue(new Date(2024, 0, 15, 12, 30), context).numFmt,
@@ -58,8 +71,79 @@ describe('dateValue', () => {
     });
 
     it('measures a date the workbook spelled out by its own format code', () => {
-        const context = { dates: new DateFormats({ dateFormat: 'dd/mm/yy' }) };
+        const context: ConvertContext = {
+            dates: new DateFormats({ dateFormat: 'dd/mm/yy' }),
+            clock: 'local',
+        };
         assert.equal(dateValue(new Date(2024, 0, 15), context).width, 'dd/mm/yy'.length);
+    });
+
+    it('reads a Date by the UTC clock when the workbook asked for that one', () => {
+        const noon = new Date(Date.UTC(2024, 0, 15, 12, 0));
+        assert.equal(dateValue(noon, UTC).v, 45306.5);
+        // The same instant read locally is the same serial moved by the zone,
+        // which is the whole of what the option decides.
+        assert.equal(
+            dateValue(noon, PLAIN).v,
+            45306.5 - (noon.getTimezoneOffset() * 60000) / 86400000,
+        );
+    });
+
+});
+
+describe('serialValue', () => {
+    it('shows a whole day as a date and a day with an hour in it as both', () => {
+        assert.equal(serialValue(45306, PLAIN).numFmt, DEFAULT_DATE_FORMAT);
+        assert.equal(serialValue(45306.5, PLAIN).numFmt, DEFAULT_DATETIME_FORMAT);
+    });
+
+    it('shows a serial with no day left in it as a time of day', () => {
+        // 31/12/1899 is the day serial 0 lands on: what is left is the time.
+        assert.equal(serialValue(0.4375, PLAIN).numFmt, DEFAULT_TIME_FORMAT);
+        assert.equal(serialValue(0.4375, PLAIN).width, 'hh:mm:ss'.length);
+    });
+
+    it('takes the kind from whoever knows it, rather than reading it off', () => {
+        assert.equal(serialValue(45306, PLAIN, 'dateTime').numFmt, DEFAULT_DATETIME_FORMAT);
+    });
+});
+
+describe('the Temporal values', () => {
+    it('writes a PlainDate as the day it is, and shows it as a date', () => {
+        const value = plainDateValue(Temporal.PlainDate.from('2024-01-15'), PLAIN);
+        assert.equal(value.v, 45306);
+        assert.equal(value.numFmt, DEFAULT_DATE_FORMAT);
+    });
+
+    it('writes a PlainDateTime as the day and the time in it', () => {
+        const value = plainDateTimeValue(Temporal.PlainDateTime.from('2024-01-15T12:00'), PLAIN);
+        assert.equal(value.v, 45306.5);
+        assert.equal(value.numFmt, DEFAULT_DATETIME_FORMAT);
+    });
+
+    it('writes a PlainTime as the fraction of a day a sheet stores a time as', () => {
+        const value = plainTimeValue(Temporal.PlainTime.from('10:30'), PLAIN);
+        assert.equal(value.v, 0.4375);
+        assert.equal(value.numFmt, DEFAULT_TIME_FORMAT);
+    });
+
+    it('does not move by a time zone, whatever clock the workbook reads Dates by', () => {
+        const day = Temporal.PlainDate.from('2024-01-15');
+        assert.equal(plainDateValue(day, PLAIN).v, plainDateValue(day, UTC).v);
+    });
+
+    it('is in the default types, since the environment has a Temporal', () => {
+        const types = defaultTypes();
+        assert.equal(types.get(Temporal.PlainDate)?.convert, plainDateValue);
+        assert.equal(types.get(Temporal.PlainDateTime)?.convert, plainDateTimeValue);
+        assert.equal(types.get(Temporal.PlainTime)?.convert, plainTimeValue);
+    });
+
+    it('is looked up by the class, the way every other type is', () => {
+        const value = new ValueTypes(defaultTypes(), PLAIN).convert(
+            Temporal.PlainDate.from('2024-01-15'),
+        );
+        assert.deepEqual(value, plainDateValue(Temporal.PlainDate.from('2024-01-15'), PLAIN));
     });
 });
 
@@ -119,21 +203,22 @@ describe('withType', () => {
     const handler = { convert: (m: Money): ConvertedValue => ({ v: m.cents / 100 }) };
 
     it('adds the type to a map that has everything the one it is based on had', () => {
-        const types = withType(defaultTypes, Money, handler);
+        const base = defaultTypes();
+        const types = withType(base, Money, handler);
         assert.equal(types.get(Money), handler);
-        assert.equal(types.get(Date), defaultTypes.get(Date));
+        assert.equal(types.get(Date), base.get(Date));
     });
 
     it('never touches what it was based on', () => {
-        const before = defaultTypes.size;
-        withType(defaultTypes, Money, handler);
-        assert.equal(defaultTypes.size, before);
-        assert.equal(defaultTypes.get(Money), undefined);
+        const before = defaultTypes().size;
+        withType(defaultTypes(), Money, handler);
+        assert.equal(defaultTypes().size, before);
+        assert.equal(defaultTypes().get(Money), undefined);
     });
 
     it('composes, so a map can be built one type at a time', () => {
         class Weight {}
-        const types = withType(withType(defaultTypes, Money, handler), Weight, {
+        const types = withType(withType(defaultTypes(), Money, handler), Weight, {
             convert: () => ({ v: 'heavy' }),
         });
         assert.equal(types.get(Money), handler);
@@ -152,7 +237,7 @@ describe('ValueTypes: what claims a value', () => {
     }
 
     it('leaves a value the writer already writes alone', () => {
-        const types = typesFor(defaultTypes);
+        const types = typesFor(defaultTypes());
         for (const value of ['x', 1, true, null, undefined]) {
             assert.equal(types.convert(value), undefined, String(value));
         }
@@ -160,14 +245,14 @@ describe('ValueTypes: what claims a value', () => {
 
     it('finds a registered class', () => {
         const types = typesFor(
-            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents / 100 }) }),
+            withType(defaultTypes(), Money, { convert: (m) => ({ v: m.cents / 100 }) }),
         );
         assert.deepEqual(types.convert(new Money(1250)), { v: 12.5 });
     });
 
     it('writes a subclass as whatever its base was registered as', () => {
         const types = typesFor(
-            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents / 100 }) }),
+            withType(defaultTypes(), Money, { convert: (m) => ({ v: m.cents / 100 }) }),
         );
         assert.deepEqual(types.convert(new Cents(300)), { v: 3 });
     });
@@ -176,7 +261,7 @@ describe('ValueTypes: what claims a value', () => {
         // The lookup is remembered per prototype, so this is one walk and 99
         // hits — what it must not do is start answering something else.
         const types = typesFor(
-            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents }) }),
+            withType(defaultTypes(), Money, { convert: (m) => ({ v: m.cents }) }),
         );
         for (let k = 0; k < 100; k++) {
             assert.deepEqual(types.convert(new Money(k)), { v: k });
@@ -184,11 +269,11 @@ describe('ValueTypes: what claims a value', () => {
     });
 
     it('finds a bigint by the class it would be written as', () => {
-        assert.deepEqual(typesFor(defaultTypes).convert(7n), { v: 7 });
+        assert.deepEqual(typesFor(defaultTypes()).convert(7n), { v: 7 });
     });
 
     it('claims nothing for an object that has no prototype at all', () => {
-        assert.equal(typesFor(defaultTypes).handlerFor(Object.create(null) as object), undefined);
+        assert.equal(typesFor(defaultTypes()).handlerFor(Object.create(null) as object), undefined);
     });
 
     it('knows nothing a map left out', () => {
@@ -200,7 +285,7 @@ describe('ValueTypes: what claims a value', () => {
     it('does not reach the Object entry by walking the chain', () => {
         // `handlerFor` stops before `Object.prototype`: a plain object has to
         // get past `isStyledCell` before the fallback can claim it.
-        const types = typesFor(withType(defaultTypes, Object, { convert: () => ({ v: 'any' }) }));
+        const types = typesFor(withType(defaultTypes(), Object, { convert: () => ({ v: 'any' }) }));
         assert.equal(types.handlerFor({}), undefined);
         assert.equal(types.handlerFor(new Money(1)), undefined);
         assert.ok(types.objectHandler);
@@ -208,7 +293,7 @@ describe('ValueTypes: what claims a value', () => {
 
     it('converts through the Object entry once nothing else has claimed the value', () => {
         const types = typesFor(
-            withType(defaultTypes, Object, { convert: (o) => ({ v: JSON.stringify(o) }) }),
+            withType(defaultTypes(), Object, { convert: (o) => ({ v: JSON.stringify(o) }) }),
         );
         assert.deepEqual(types.convert({ a: 1 }), { v: '{"a":1}' });
         // A registered class still wins over it.
@@ -227,7 +312,7 @@ describe('a value of a registered type, in a row', () => {
         }
     }
 
-    const TYPES = withType(defaultTypes, HourRange, {
+    const TYPES = withType(defaultTypes(), HourRange, {
         convert: (range) => ({ v: range.toString() }),
     });
 
@@ -264,7 +349,7 @@ describe('a value of a registered type, in a row', () => {
 
     it('refuses a class nobody registered, by name', () => {
         assert.throws(
-            () => rowXml([new HourRange('8:00', '10:30')], defaultTypes),
+            () => rowXml([new HourRange('8:00', '10:30')], defaultTypes()),
             /"HourRange" is not one of them/,
         );
     });
@@ -301,7 +386,7 @@ describe('a value of a registered type, in a row', () => {
         class Interval {
             constructor(readonly ms: number) {}
         }
-        const types = withType(defaultTypes, Interval, {
+        const types = withType(defaultTypes(), Interval, {
             convert: (interval) => ({ v: interval.ms / 86400000, numFmt: '[h]:mm:ss' }),
         });
         const widths = new WidthMeter(50);

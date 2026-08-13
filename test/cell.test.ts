@@ -5,7 +5,7 @@ import {
     columnLetters,
     excelSerial,
     fromExcelSerial,
-    hasTimeOfDay,
+    serialKind,
     sanitizeText,
 } from '../src/core/cell.js';
 
@@ -232,11 +232,17 @@ describe('fromExcelSerial', () => {
     });
 });
 
-describe('hasTimeOfDay', () => {
+describe('serialKind', () => {
     it('is what tells a date from a date and a time', () => {
-        assert.equal(hasTimeOfDay(new Date(2024, 0, 15)), false);
-        assert.equal(hasTimeOfDay(new Date(2024, 0, 15, 0, 0, 0, 1)), true);
-        assert.equal(hasTimeOfDay(new Date(2024, 0, 15, 12, 30)), true);
+        assert.equal(serialKind(excelSerial(new Date(2024, 0, 15))), 'date');
+        assert.equal(serialKind(excelSerial(new Date(2024, 0, 15, 0, 0, 0, 1))), 'dateTime');
+        assert.equal(serialKind(excelSerial(new Date(2024, 0, 15, 12, 30))), 'dateTime');
+    });
+
+    it('is a time of day where there is no day left: a serial under 1', () => {
+        assert.equal(serialKind(0), 'time');
+        assert.equal(serialKind(0.4375), 'time');
+        assert.equal(serialKind(1), 'date');
     });
 });
 
