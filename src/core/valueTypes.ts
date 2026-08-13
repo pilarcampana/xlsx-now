@@ -13,8 +13,9 @@
 // the first entry of the map rather than a case above it, which is the whole
 // test of whether this generalizes: a `Temporal.PlainDate`, a `BigInt`, or a
 // class of the caller's own goes in the same way and costs the same.
-import { excelSerial } from './cell.js';
+import { excelSerial, serialKind, type DateKind, type WriteDates } from './cell.js';
 import { DEFAULT_DATE_FORMATS, type DateFormats } from './styles.js';
+import { temporalApi, type PlainDate, type PlainDateTime, type PlainTime } from './temporal.js';
 import type { CellType } from './types.js';
 
 /**
@@ -34,6 +35,12 @@ export interface ConvertContext {
      * own, which is what keeps one workbook writing its dates one way.
      */
     readonly dates: DateFormats;
+    /**
+     * Which clock a `Date` is read by, as the workbook's `dates` option said
+     * it. It is the one thing a `Date` cannot say for itself — a
+     * `Temporal.PlainDate` already has — so it is the only thing this adds.
+     */
+    readonly clock: WriteDates;
 }
 
 /**
@@ -134,15 +141,65 @@ export type RegisteredHandler = TypeHandler<never>;
 export type TypeMap = ReadonlyMap<TypeKey, RegisteredHandler>;
 
 /**
- * A `Date` as a cell holds it: the serial number, under the format the
- * workbook shows its dates in, measured as that format writes them.
+ * A serial as a cell holds it: the number, under the format the workbook shows
+ * that kind of date in, measured as that format writes them.
+ *
+ * `kind` is worked out from the serial unless the value knew better: a whole
+ * number is a day, a fraction of one carries a time, and under `1` there is no
+ * day left. A type that says its own kind — `Temporal.PlainDate` is a date
+ * whether or not its serial has an hour in it — passes it instead.
+ */
+export function serialValue(
+    serial: number,
+    { dates }: ConvertContext,
+    kind: DateKind = serialKind(serial),
+): ConvertedValue {
+    return { v: serial, numFmt: dates.for(kind), width: dates.textLength(kind) };
+}
+
+/**
+ * A `Date` as a cell holds it: the serial number for the clock the workbook
+ * reads its dates by — see `dates` in the writer options — under the format
+ * that kind of date is shown in.
  *
  * Exported because it is what a caller's own date-like type delegates to —
  * `convert: (own, context) => dateValue(own.toDate(), context)` is the whole
  * of a handler for a class that wraps a `Date`.
  */
-export function dateValue(value: Date, { dates }: ConvertContext): ConvertedValue {
-    return { v: excelSerial(value), numFmt: dates.for(value), width: dates.textLength(value) };
+export function dateValue(value: Date, context: ConvertContext): ConvertedValue {
+    return serialValue(excelSerial(value, context.clock), context);
+}
+
+/**
+ * A `Temporal.PlainDate` as a cell holds it, and the two next to it.
+ *
+ * There is no clock to pick here, which is the whole point of these types: a
+ * `PlainDate` is a day and nothing else, so what it is worth is fixed. Each
+ * one is read as the UTC instant of its own ISO text — `2024-01-15` is
+ * `2024-01-15T00:00:00Z` — and that instant read as UTC is the wall clock the
+ * value already was.
+ */
+export function plainDateValue(value: PlainDate, context: ConvertContext): ConvertedValue {
+    const day = new Date(`${value.toString()}T00:00:00Z`);
+    return serialValue(excelSerial(day, 'utc'), context, 'date');
+}
+
+/** A `Temporal.PlainDateTime`; a midnight is still shown as the day it is. */
+export function plainDateTimeValue(value: PlainDateTime, context: ConvertContext): ConvertedValue {
+    return serialValue(excelSerial(new Date(`${value.toString()}Z`), 'utc'), context);
+}
+
+/**
+ * A `Temporal.PlainTime`, as the fraction of a day a sheet stores a time as:
+ * 31/12/1899 is the day serial 0 lands on, so a time of that day is the
+ * fraction alone.
+ */
+export function plainTimeValue(value: PlainTime, context: ConvertContext): ConvertedValue {
+    return serialValue(
+        excelSerial(new Date(`1899-12-31T${value.toString()}Z`), 'utc'),
+        context,
+        'time',
+    );
 }
 
 /**
@@ -181,12 +238,27 @@ export function urlValue(value: URL): ConvertedValue {
  * of a decision: a `Map`, a `Set`, a nested array or a class nobody registered
  * has no one right way to be written down, so it is refused by name rather
  * than written out as whatever `String()` makes of it.
+ *
+ * The three `Temporal` classes are among them where the environment has a
+ * `Temporal` — which is settled by the time this module loads, and so is this
+ * map. See `temporalApi`.
  */
-export const defaultTypes: TypeMap = new Map<TypeKey, RegisteredHandler>([
-    [Date, { convert: dateValue }],
-    [BigInt, { convert: bigintValue }],
-    [URL, { convert: urlValue }],
-]);
+export const defaultTypes: TypeMap = withTemporal(
+    new Map<TypeKey, RegisteredHandler>([
+        [Date, { convert: dateValue }],
+        [BigInt, { convert: bigintValue }],
+        [URL, { convert: urlValue }],
+    ]),
+);
+
+/** The three `Temporal` classes added to a map, where there are three to add. */
+function withTemporal(types: Map<TypeKey, RegisteredHandler>): TypeMap {
+    if (temporalApi === undefined) return types;
+    types.set(temporalApi.PlainDate, { convert: plainDateValue });
+    types.set(temporalApi.PlainDateTime, { convert: plainDateTimeValue });
+    types.set(temporalApi.PlainTime, { convert: plainTimeValue });
+    return types;
+}
 
 /**
  * The same types, and one more.
@@ -255,7 +327,7 @@ export class ValueTypes {
 
     constructor(
         types: TypeMap = defaultTypes,
-        context: ConvertContext = { dates: DEFAULT_DATE_FORMATS },
+        context: ConvertContext = { dates: DEFAULT_DATE_FORMATS, clock: 'local' },
     ) {
         let objectHandler: RegisteredHandler | undefined;
         for (const [type, handler] of types) {

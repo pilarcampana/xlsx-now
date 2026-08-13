@@ -31,7 +31,7 @@ const RECORDS: Row[] = [
 ];
 
 async function generate(columns: readonly Column[], rows: Row[]): Promise<Buffer> {
-    return collect(createXlsxStream({ columns, rows, sheetName: 'People' }));
+    return collect(createXlsxStream({ columns, rows, sheetName: 'People', dates:'utc' }));
 }
 
 async function open(bytes: Buffer): Promise<ExcelJS.Worksheet> {

@@ -6,6 +6,7 @@
 // collect those rows into a grid, which is what most callers want and what
 // none of them should have to hold if they don't.
 import type { StyledCell } from '../types.js';
+import { readDates, type ReadDates } from './dates.js';
 import { NO_FORMATS, readNumberFormats, type NumberFormats } from './numberFormats.js';
 import { bytesAccess, type RandomAccess } from './randomAccess.js';
 import { readSharedStrings } from './sharedStrings.js';
@@ -32,6 +33,17 @@ export type XlsxSource = Uint8Array | RandomAccess;
 export interface ReadOptions<M extends ReadMode> {
     /** What each cell comes back as. Defaults to `values`. */
     mode?: M;
+    /**
+     * What a date cell is built as: a `Temporal` value, a `Date` read in UTC, a
+     * `Date` read locally, or the ISO text. Defaults to `temporal`, which is
+     * the only one of the four that says exactly what the sheet says — see
+     * `ReadDates`.
+     *
+     * `temporal` needs a `Temporal` in the environment, native or a polyfill,
+     * and a package opened without one fails here rather than at the first
+     * date it reads.
+     */
+    dates?: ReadDates;
 }
 
 /** One worksheet of an open package, not read yet. */
@@ -64,6 +76,9 @@ export async function openXlsx<M extends ReadMode = 'values'>(
     source: XlsxSource,
     options: ReadOptions<M> = {},
 ): Promise<XlsxReader<ReadModes[M]>> {
+    // Before the file is touched: an option that cannot be honoured is not
+    // something to find out about with a sheet already half read.
+    const dates = readDates(options.dates);
     const access = source instanceof Uint8Array ? bytesAccess(source) : source;
     const entries = await readCentralDirectory(access);
 
@@ -93,6 +108,7 @@ export async function openXlsx<M extends ReadMode = 'values'>(
         sharedStrings: sharedStringsXml === undefined ? [] : readSharedStrings(sharedStringsXml),
         formats,
         date1904: workbook.date1904,
+        dates,
     };
 
     // The one cast in the reader, and what it stands in for is the link

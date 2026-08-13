@@ -10,8 +10,9 @@
 // one is the honest limit of how little a reader can hold, and it is the
 // format's doing — a cell says `<v>7</v>` and means the seventh entry of a
 // table it does not carry.
-import { columnIndex, fromExcelSerial } from '../cell.js';
+import { columnIndex } from '../cell.js';
 import type { CellType, StyledCell } from '../types.js';
+import { readDate, readIsoDate, type ReadDates } from './dates.js';
 import type { NumberFormats } from './numberFormats.js';
 import type { ReadRow, ReadValue } from './types.js';
 import { XmlParser } from './xml.js';
@@ -36,6 +37,8 @@ export interface CellContext {
     sharedStrings: readonly string[];
     formats: NumberFormats;
     date1904: boolean;
+    /** What a date is built as; see `ReadDates`. */
+    dates: ReadDates;
 }
 
 /** `B12` as the coordinates it names, counting columns from 0 and rows from 1. */
@@ -59,8 +62,8 @@ function numberOf(raw: RawCell): number {
 }
 
 /** The date a serial means, under whichever epoch the workbook counts from. */
-function dateOf(serial: number, context: CellContext): Date {
-    return fromExcelSerial(context.date1904 ? serial + DAYS_1904_TO_1900 : serial);
+function dateOf(serial: number, context: CellContext): ReadValue {
+    return readDate(context.date1904 ? serial + DAYS_1904_TO_1900 : serial, context.dates);
 }
 
 /**
@@ -101,13 +104,12 @@ export function cellValue(raw: RawCell, context: CellContext): ReadValue {
         case 'inlineStr':
         case 'e':
             return raw.value;
-        case 'd': {
-            const date = new Date(raw.value);
-            if (Number.isNaN(date.getTime())) {
-                throw new Error(`A date cell holds "${raw.value}", which is not a date.`);
-            }
-            return date;
-        }
+        case 'd':
+            // The cell that spells its date out instead of numbering it, which
+            // is what a day the serial cannot number has to be written as. It
+            // never becomes one: see `readIsoDate` — and the 1904 epoch has
+            // nothing to shift in a text that names its own day.
+            return readIsoDate(raw.value, context.dates);
         default:
             throw new Error(`A cell says it holds "${raw.type}", which is not a type a sheet has.`);
     }

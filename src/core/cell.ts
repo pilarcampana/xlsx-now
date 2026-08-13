@@ -4,7 +4,6 @@ import type { NativeValue } from './valueTypes.js';
 // Days between 1900-01-01 and 1970-01-01 (Excel's epoch quirk on Windows).
 const EXCEL_EPOCH_OFFSET_DAYS = 25569;
 const MS_PER_DAY = 86400000;
-const MS_PER_MINUTE = 60000;
 
 /**
  * The serial Excel gives to a day that never happened.
@@ -105,20 +104,82 @@ export function columnIndex(letters: string): number | undefined {
 }
 
 /**
- * A `Date` as the serial number a sheet stores, read as the clock the caller
- * is looking at.
+ * Which clock a `Date` is read by on the way into a sheet.
+ *
+ * A sheet has no time zone and a `Date` is an instant, so writing one down
+ * means picking the clock it is read by, and there are only two answers:
+ * `local` is the one the caller is looking at — `getFullYear()`,
+ * `getHours()` — and `utc` is the one `getUTCHours()` gives. A `Date` built
+ * from a local calendar is `local`; one that came from an ISO text with a `Z`
+ * on it, or from a database that stores instants, is `utc`.
+ */
+export type WriteDates = 'local' | 'utc';
+
+/** The `dates` a workbook was written with, checked. Defaults to `local`. */
+export function writeDates(option: WriteDates | undefined): WriteDates {
+    if (option === undefined) return 'local';
+    if (option !== 'local' && option !== 'utc') {
+        throw new Error(
+            `dates: "${String(option)}" is not a clock a Date can be read by: say "local" or "utc".`,
+        );
+    }
+    return option;
+}
+
+/** What a date is worth showing: the day, the day and the hour, or the hour. */
+export type DateKind = 'date' | 'dateTime' | 'time';
+
+/**
+ * What a serial has to show. It is the number that says so and nothing else —
+ * which is what makes the answer the same on both sides of the file: the
+ * format the writer shows a value under, and the shape the reader builds one
+ * into, are the same decision made twice.
+ *
+ * A whole number is a day. A fraction of one is the time of day next to it. And
+ * under `1` there is no day left: serial 0 is Excel's own "day zero", where a
+ * time with no date is stored, so `0.4375` is half past ten in the morning and
+ * nothing else.
+ */
+export function serialKind(serial: number): DateKind {
+    if (serial < 1) return 'time';
+    return Number.isInteger(serial) ? 'date' : 'dateTime';
+}
+
+function toLocalISOString(date:Date) {
+  const pad = (n:number, len = 2) => String(n).padStart(len, '0');
+  return (
+    date.getFullYear() +
+    '-' + pad(date.getMonth() + 1) +
+    '-' + pad(date.getDate()) +
+    'T' + pad(date.getHours()) +
+    ':' + pad(date.getMinutes()) +
+    ':' + pad(date.getSeconds()) +
+    '.' + pad(date.getMilliseconds(), 3)
+  );
+}
+
+/**
+ * A `Date` as the serial number a sheet stores, read by the clock `dates`
+ * asks for.
  *
  * A sheet has no time zone: what it holds is a wall clock, so a date that
  * reads `2024-01-15 00:00` has to come out of the file reading the same.
  * `getTime()` is UTC, and taking that as the serial moves every date by the
  * writer's own offset — three hours in Buenos Aires, which is enough to land
- * a midnight on the day before. `getTimezoneOffset()` is what the date itself
- * says its offset is, daylight saving and all, so what gets written is the
- * same reading `getFullYear()` and `getHours()` give.
+ * a midnight on the day before. So under `local`, the default,
+ * `getTimezoneOffset()` — what the date itself says its offset is, daylight
+ * saving and all — is taken off first, and what gets written is the same
+ * reading `getFullYear()` and `getHours()` give.
+ *
+ * Under `utc` that step is skipped and the instant goes in as it is, which is
+ * the right answer for a `Date` that was never a local calendar to begin with.
  */
-export function excelSerial(value: Date): number {
-    const local = value.getTime() - value.getTimezoneOffset() * MS_PER_MINUTE;
-    const days = local / MS_PER_DAY + EXCEL_EPOCH_OFFSET_DAYS;
+export function excelSerial(value: Date, dates: WriteDates = 'local'): number {
+    const wall =
+        dates === 'utc'
+            ? value.getTime()
+            : new Date(toLocalISOString(value)+'Z').getTime()
+    const days = wall / MS_PER_DAY + EXCEL_EPOCH_OFFSET_DAYS;
     // Days counted from 1899-12-30, which is the numbering Excel uses from
     // 01/03/1900 on. Before that its own count is one lower, because of the
     // 29/02/1900 it has and the calendar does not.
@@ -135,14 +196,18 @@ export function excelSerial(value: Date): number {
 }
 
 /**
- * The serial number a sheet stores, back as a `Date` — `excelSerial` the
- * other way round, and the reader's whole answer to what a date is.
+ * The serial number a sheet stores, back as the `Date` that *reads* as it in
+ * UTC — `excelSerial(value, 'utc')` the other way round.
  *
- * The wall clock is kept the same way it was written: the serial says
- * `2024-01-15 00:00` and the `Date` that comes back reads `2024-01-15 00:00`
- * to whoever asks it, wherever they are. A serial under `1` carries a time of
- * day and no meaningful date, and it lands on 31/12/1899 — the day
- * `excelSerial` sends it back from, so a time survives the round trip.
+ * The wall clock the serial holds goes in unmoved: serial `45306.5` comes back
+ * as the instant `2024-01-15T12:00:00.000Z`, whatever zone the reader is in.
+ * Which makes it the one form of a date that does not depend on where it is
+ * read, and the one everything else is built from — the ISO text of a date, a
+ * `Temporal.PlainDate`, and the local `Date` below.
+ *
+ * A serial under `1` carries a time of day and no meaningful date, and it
+ * lands on 31/12/1899 — the day `excelSerial` sends it back from, so a time
+ * survives the round trip.
  *
  * The one serial with no answer is 60, [the day Excel has and the calendar
  * does not](https://learn.microsoft.com/office/troubleshoot/excel/wrongly-assumes-1900-is-leap-year):
@@ -151,7 +216,7 @@ export function excelSerial(value: Date): number {
  * them back would make two different serials read as the same day, so it is
  * refused instead.
  */
-export function fromExcelSerial(serial: number): Date {
+export function fromExcelSerialUtc(serial: number): Date {
     if (serial >= PHANTOM_LEAP_DAY_SERIAL && serial < FIRST_UNSHIFTED_SERIAL) {
         throw new RangeError(
             `Serial ${serial} is 29/02/1900, a day this spreadsheet format has and the calendar does not.`,
@@ -165,29 +230,23 @@ export function fromExcelSerial(serial: number): Date {
     // and a serial is a fraction of a day: half past twelve is
     // `45306.520833333336`, and taken at face value it comes back a
     // millisecond short of the half hour it went in as.
-    const local = Math.round((days - EXCEL_EPOCH_OFFSET_DAYS) * MS_PER_DAY);
-    // `local` is the wall clock read as if it were UTC, and the instant that
-    // shows that wall clock is it plus whatever the zone's offset is *at that
-    // instant* — which is what makes this a fixed point rather than a sum:
-    // the offset depends on the date it is being applied to.
-    //
-    // The first guess reads the offset up to fourteen hours away from the
-    // right instant, which only matters near a daylight saving change; the
-    // second reads it within an hour, which settles every case except the
-    // hour a zone skips over — and that one is a wall clock that never
-    // happened, so it has no exact answer to arrive at.
-    const guess = new Date(local + new Date(local).getTimezoneOffset() * MS_PER_MINUTE);
-    return new Date(local + guess.getTimezoneOffset() * MS_PER_MINUTE);
+    return new Date(Math.round((days - EXCEL_EPOCH_OFFSET_DAYS) * MS_PER_DAY));
 }
 
-/** Whether a `Date` says anything past the day — what decides its format. */
-export function hasTimeOfDay(value: Date): boolean {
-    return (
-        value.getHours() !== 0 ||
-        value.getMinutes() !== 0 ||
-        value.getSeconds() !== 0 ||
-        value.getMilliseconds() !== 0
-    );
+/**
+ * The serial number a sheet stores, back as the `Date` that reads as it on the
+ * caller's own clock — `excelSerial` the other way round.
+ *
+ * The serial says `2024-01-15 00:00` and the `Date` that comes back reads
+ * `2024-01-15 00:00` to whoever asks it, wherever they are.
+ */
+export function fromExcelSerial(serial: number): Date {
+    const wall = fromExcelSerialUtc(serial);
+    const match = wall.toISOString().match(/(\d+)-(\d+)-(\d+)[ T]+(\d+):(\d+):(\d+)(?:\.(\d*))/)
+    return match ?
+        // @ts-ignore
+        new Date(match[1],match[2]-1,match[3],match[4],match[5],match[6],match[7]??0)
+        : (() => {throw new Error('NO DATE')})();
 }
 
 /**

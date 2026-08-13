@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Temporal } from 'temporal-polyfill';
 import { XlsxWriter, type XlsxWriterOptions } from '../src/core/xlsxWriter.js';
 import type { SheetInput } from '../src/core/command.js';
 import type { CellRow, Column } from '../src/core/types.js';
@@ -74,8 +75,18 @@ describe('XlsxWriter: the package it writes', () => {
 });
 
 describe('XlsxWriter: the rows mode', () => {
-    it('writes one row per array, numbered from 1', async () => {
+    it('writes one row per array, numbered from 1 - utc', async () => {
         const rows: CellRow[] = [['a', 1], [true, new Date(0)]];
+        const { sheet } = await readXlsx(write({dates:'utc'}, rows));
+        assert.deepEqual(sheetRows(sheet), [
+            '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c>' +
+                '<c r="B1"><v>1</v></c></row>',
+            '<row r="2"><c r="A2" t="b"><v>1</v></c><c r="B2" s="1"><v>25569</v></c></row>',
+        ]);
+    });
+
+    it('writes one row per array, numbered from 1 - local', async () => {
+        const rows: CellRow[] = [['a', 1], [true, new Date(1970,1-1,1)]];
         const { sheet } = await readXlsx(write({}, rows));
         assert.deepEqual(sheetRows(sheet), [
             '<row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c>' +
@@ -495,6 +506,38 @@ describe('XlsxWriter: the styles the workbook carries', () => {
     it('refuses a date format nothing can be added to before it writes a byte', () => {
         const { sink, bytes } = recordingSink();
         assert.throws(() => new XlsxWriter(sink, { dateFormat: 15 }), /dateTimeFormat/);
+        assert.equal(bytes().length, 0);
+    });
+
+    it('reads its Dates by the clock the workbook asked for', async () => {
+        const noon = new Date(Date.UTC(2024, 0, 15, 12, 0));
+        const { sheet } = await readXlsx(write({ dates: 'utc' }, [[noon]]));
+        // 45306.5 is 15/01/2024 at midday, which is what that instant reads as
+        // in UTC — where the local clock would have written the reader's own.
+        assert.ok(sheet.includes('<v>45306.5</v>'), sheet);
+    });
+
+    it('writes a Temporal value as the wall clock it already is', async () => {
+        const { sheet } = await readXlsx(
+            write({}, [
+                [
+                    Temporal.PlainDate.from('2024-01-15'),
+                    Temporal.PlainDateTime.from('2024-01-15T12:00'),
+                    Temporal.PlainTime.from('10:30'),
+                ],
+            ]),
+        );
+        assert.ok(sheet.includes('<v>45306</v>'), sheet);
+        assert.ok(sheet.includes('<v>45306.5</v>'), sheet);
+        assert.ok(sheet.includes('<v>0.4375</v>'), sheet);
+    });
+
+    it('says what the two clocks are when it is handed something else', () => {
+        const { sink, bytes } = recordingSink();
+        assert.throws(
+            () => new XlsxWriter(sink, { dates: 'gmt' as 'utc' }),
+            /"gmt" is not a clock a Date can be read by/,
+        );
         assert.equal(bytes().length, 0);
     });
 

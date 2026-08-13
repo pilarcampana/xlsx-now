@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { Temporal } from 'temporal-polyfill';
 import { columnWidth, WidthMeter } from '../src/core/autoWidth.js';
 import { cellRowXml } from '../src/core/sheet.js';
 import {
     DateFormats,
     DEFAULT_DATETIME_FORMAT,
     DEFAULT_DATE_FORMAT,
+    DEFAULT_TIME_FORMAT,
     StyleTable,
 } from '../src/core/styles.js';
 import type { CellRow } from '../src/core/types.js';
@@ -12,16 +14,23 @@ import {
     bigintValue,
     dateValue,
     defaultTypes,
+    plainDateTimeValue,
+    plainDateValue,
+    plainTimeValue,
+    serialValue,
     shownWidth,
     urlValue,
     ValueTypes,
     withType,
     type ConvertedValue,
+    type ConvertContext,
     type TypeMap,
 } from '../src/core/valueTypes.js';
 
 /** The context a workbook that said nothing about its dates hands out. */
-const PLAIN = { dates: new DateFormats() };
+const PLAIN: ConvertContext = { dates: new DateFormats(), clock: 'local' };
+/** The same workbook, reading its `Date`s by the UTC clock instead. */
+const UTC: ConvertContext = { dates: new DateFormats(), clock: 'utc' };
 
 describe('dateValue', () => {
     it('writes a Date as an Excel serial number', () => {
@@ -39,7 +48,10 @@ describe('dateValue', () => {
     });
 
     it('takes the formats the workbook it belongs to uses', () => {
-        const context = { dates: new DateFormats({ dateFormat: 'yyyy-mm-dd' }) };
+        const context: ConvertContext = {
+            dates: new DateFormats({ dateFormat: 'yyyy-mm-dd' }),
+            clock: 'local',
+        };
         assert.equal(dateValue(new Date(2024, 0, 15), context).numFmt, 'yyyy-mm-dd');
         assert.equal(
             dateValue(new Date(2024, 0, 15, 12, 30), context).numFmt,
@@ -58,8 +70,79 @@ describe('dateValue', () => {
     });
 
     it('measures a date the workbook spelled out by its own format code', () => {
-        const context = { dates: new DateFormats({ dateFormat: 'dd/mm/yy' }) };
+        const context: ConvertContext = {
+            dates: new DateFormats({ dateFormat: 'dd/mm/yy' }),
+            clock: 'local',
+        };
         assert.equal(dateValue(new Date(2024, 0, 15), context).width, 'dd/mm/yy'.length);
+    });
+
+    it('reads a Date by the UTC clock when the workbook asked for that one', () => {
+        const noon = new Date(Date.UTC(2024, 0, 15, 12, 0));
+        assert.equal(dateValue(noon, UTC).v, 45306.5);
+        // The same instant read locally is the same serial moved by the zone,
+        // which is the whole of what the option decides.
+        assert.equal(
+            dateValue(noon, PLAIN).v,
+            45306.5 - (noon.getTimezoneOffset() * 60000) / 86400000,
+        );
+    });
+
+});
+
+describe('serialValue', () => {
+    it('shows a whole day as a date and a day with an hour in it as both', () => {
+        assert.equal(serialValue(45306, PLAIN).numFmt, DEFAULT_DATE_FORMAT);
+        assert.equal(serialValue(45306.5, PLAIN).numFmt, DEFAULT_DATETIME_FORMAT);
+    });
+
+    it('shows a serial with no day left in it as a time of day', () => {
+        // 31/12/1899 is the day serial 0 lands on: what is left is the time.
+        assert.equal(serialValue(0.4375, PLAIN).numFmt, DEFAULT_TIME_FORMAT);
+        assert.equal(serialValue(0.4375, PLAIN).width, 'hh:mm:ss'.length);
+    });
+
+    it('takes the kind from whoever knows it, rather than reading it off', () => {
+        assert.equal(serialValue(45306, PLAIN, 'dateTime').numFmt, DEFAULT_DATETIME_FORMAT);
+    });
+});
+
+describe('the Temporal values', () => {
+    it('writes a PlainDate as the day it is, and shows it as a date', () => {
+        const value = plainDateValue(Temporal.PlainDate.from('2024-01-15'), PLAIN);
+        assert.equal(value.v, 45306);
+        assert.equal(value.numFmt, DEFAULT_DATE_FORMAT);
+    });
+
+    it('writes a PlainDateTime as the day and the time in it', () => {
+        const value = plainDateTimeValue(Temporal.PlainDateTime.from('2024-01-15T12:00'), PLAIN);
+        assert.equal(value.v, 45306.5);
+        assert.equal(value.numFmt, DEFAULT_DATETIME_FORMAT);
+    });
+
+    it('writes a PlainTime as the fraction of a day a sheet stores a time as', () => {
+        const value = plainTimeValue(Temporal.PlainTime.from('10:30'), PLAIN);
+        assert.equal(value.v, 0.4375);
+        assert.equal(value.numFmt, DEFAULT_TIME_FORMAT);
+    });
+
+    it('does not move by a time zone, whatever clock the workbook reads Dates by', () => {
+        const day = Temporal.PlainDate.from('2024-01-15');
+        assert.equal(plainDateValue(day, PLAIN).v, plainDateValue(day, UTC).v);
+    });
+
+    it('is in the default types, since the environment has a Temporal', () => {
+        const types = defaultTypes;
+        assert.equal(types.get(Temporal.PlainDate)?.convert, plainDateValue);
+        assert.equal(types.get(Temporal.PlainDateTime)?.convert, plainDateTimeValue);
+        assert.equal(types.get(Temporal.PlainTime)?.convert, plainTimeValue);
+    });
+
+    it('is looked up by the class, the way every other type is', () => {
+        const value = new ValueTypes(defaultTypes, PLAIN).convert(
+            Temporal.PlainDate.from('2024-01-15'),
+        );
+        assert.deepEqual(value, plainDateValue(Temporal.PlainDate.from('2024-01-15'), PLAIN));
     });
 });
 

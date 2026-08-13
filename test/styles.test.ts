@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {
-    DEFAULT_DATETIME_FORMAT,
     DEFAULT_DATE_FORMAT,
+    DEFAULT_DATETIME_FORMAT,
+    DEFAULT_TIME_FORMAT,
     DateFormats,
     StyleTable,
     argb,
@@ -450,31 +451,36 @@ describe('StyleTable: the styles a cell falls under, stacked', () => {
 });
 
 describe('DateFormats', () => {
-    const day = new Date(2024, 0, 15);
-    const moment = new Date(2024, 0, 15, 12, 30);
-
     it('falls back to the built-in short date, and to the one with the time', () => {
         const dates = new DateFormats();
-        assert.equal(dates.for(day), DEFAULT_DATE_FORMAT);
-        assert.equal(dates.for(moment), DEFAULT_DATETIME_FORMAT);
+        assert.equal(dates.for('date'), DEFAULT_DATE_FORMAT);
+        assert.equal(dates.for('dateTime'), DEFAULT_DATETIME_FORMAT);
+        assert.equal(dates.for('time'), DEFAULT_TIME_FORMAT);
     });
 
     it('adds the time of day to a format code, so only the date is asked for', () => {
         // Hours read the same everywhere; the order of a date does not.
         const dates = new DateFormats({ dateFormat: 'dd/mm/yyyy' });
-        assert.equal(dates.for(day), 'dd/mm/yyyy');
-        assert.equal(dates.for(moment), 'dd/mm/yyyy hh:mm:ss');
+        assert.equal(dates.for('date'), 'dd/mm/yyyy');
+        assert.equal(dates.for('dateTime'), 'dd/mm/yyyy hh:mm:ss');
     });
 
     it('takes a date and time format said outright, whatever the date one is', () => {
         const dates = new DateFormats({ dateFormat: 'dd/mm/yy', dateTimeFormat: 'dd/mm/yy hh:mm' });
-        assert.equal(dates.for(moment), 'dd/mm/yy hh:mm');
-        assert.equal(new DateFormats({ dateTimeFormat: 15 }).for(moment), 15);
+        assert.equal(dates.for('dateTime'), 'dd/mm/yy hh:mm');
+        assert.equal(new DateFormats({ dateTimeFormat: 15 }).for('dateTime'), 15);
+    });
+
+    it('takes a time format of its own, for a value that is a time and no date', () => {
+        const dates = new DateFormats({ timeFormat: 'hh:mm' });
+        assert.equal(dates.for('time'), 'hh:mm');
+        assert.equal(dates.textLength('time'), 'hh:mm'.length);
+        assert.equal(new DateFormats().textLength('time'), 'hh:mm:ss'.length);
     });
 
     it('refuses a built-in date format with no time format next to it', () => {
         // A built-in is an id: there is no format code to add `hh:mm:ss` to.
         assert.throws(() => new DateFormats({ dateFormat: 15 }), /dateTimeFormat/);
-        assert.equal(new DateFormats({ dateFormat: 15, dateTimeFormat: 22 }).for(day), 15);
+        assert.equal(new DateFormats({ dateFormat: 15, dateTimeFormat: 22 }).for('date'), 15);
     });
 });

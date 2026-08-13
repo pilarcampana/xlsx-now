@@ -1,19 +1,34 @@
+import type { PlainDate, PlainDateTime, PlainTime } from '../temporal.js';
 import type { StyledCell } from '../types.js';
 
 /**
  * A value as the reader gives it back: the four things a sheet holds, plus
- * the `Date` a number under a date format turns out to be.
+ * whatever a number under a date format was asked to become.
  *
  * Deliberately narrower than the writer's `CellValue`, which is open to any
  * class the caller registered a type for. Nothing like that comes back out of
  * a file: what a sheet stores is a number, a string, a boolean or nothing,
- * and a `Date` is the one of them the format gives a meaning to.
+ * and a date is the one of them the format gives a meaning to.
+ *
+ * Which of the date types it is, is the reader's `dates` option and nothing
+ * else: they are all four in the union because the option is read at run time,
+ * and a caller who picked one knows which one they picked. A `string` is in it
+ * twice over, being both what a text cell holds and what `dates: 'isoString'`
+ * gives back.
  *
  * `null` is a cell that is there and empty. A cell that is not there at all
  * is `undefined`, and the two are different on purpose — the same difference
  * the writer makes on the way in.
  */
-export type ReadValue = string | number | boolean | Date | null;
+export type ReadValue =
+    | string
+    | number
+    | boolean
+    | Date
+    | PlainDate
+    | PlainDateTime
+    | PlainTime
+    | null;
 
 /**
  * What comes back for each cell, chosen by `mode`:
