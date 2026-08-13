@@ -1,4 +1,3 @@
-import 'temporal-polyfill/global';
 import assert from 'node:assert/strict';
 import { Temporal } from 'temporal-polyfill';
 import { columnWidth, WidthMeter } from '../src/core/autoWidth.js';
@@ -133,14 +132,14 @@ describe('the Temporal values', () => {
     });
 
     it('is in the default types, since the environment has a Temporal', () => {
-        const types = defaultTypes();
+        const types = defaultTypes;
         assert.equal(types.get(Temporal.PlainDate)?.convert, plainDateValue);
         assert.equal(types.get(Temporal.PlainDateTime)?.convert, plainDateTimeValue);
         assert.equal(types.get(Temporal.PlainTime)?.convert, plainTimeValue);
     });
 
     it('is looked up by the class, the way every other type is', () => {
-        const value = new ValueTypes(defaultTypes(), PLAIN).convert(
+        const value = new ValueTypes(defaultTypes, PLAIN).convert(
             Temporal.PlainDate.from('2024-01-15'),
         );
         assert.deepEqual(value, plainDateValue(Temporal.PlainDate.from('2024-01-15'), PLAIN));
@@ -203,22 +202,21 @@ describe('withType', () => {
     const handler = { convert: (m: Money): ConvertedValue => ({ v: m.cents / 100 }) };
 
     it('adds the type to a map that has everything the one it is based on had', () => {
-        const base = defaultTypes();
-        const types = withType(base, Money, handler);
+        const types = withType(defaultTypes, Money, handler);
         assert.equal(types.get(Money), handler);
-        assert.equal(types.get(Date), base.get(Date));
+        assert.equal(types.get(Date), defaultTypes.get(Date));
     });
 
     it('never touches what it was based on', () => {
-        const before = defaultTypes().size;
-        withType(defaultTypes(), Money, handler);
-        assert.equal(defaultTypes().size, before);
-        assert.equal(defaultTypes().get(Money), undefined);
+        const before = defaultTypes.size;
+        withType(defaultTypes, Money, handler);
+        assert.equal(defaultTypes.size, before);
+        assert.equal(defaultTypes.get(Money), undefined);
     });
 
     it('composes, so a map can be built one type at a time', () => {
         class Weight {}
-        const types = withType(withType(defaultTypes(), Money, handler), Weight, {
+        const types = withType(withType(defaultTypes, Money, handler), Weight, {
             convert: () => ({ v: 'heavy' }),
         });
         assert.equal(types.get(Money), handler);
@@ -237,7 +235,7 @@ describe('ValueTypes: what claims a value', () => {
     }
 
     it('leaves a value the writer already writes alone', () => {
-        const types = typesFor(defaultTypes());
+        const types = typesFor(defaultTypes);
         for (const value of ['x', 1, true, null, undefined]) {
             assert.equal(types.convert(value), undefined, String(value));
         }
@@ -245,14 +243,14 @@ describe('ValueTypes: what claims a value', () => {
 
     it('finds a registered class', () => {
         const types = typesFor(
-            withType(defaultTypes(), Money, { convert: (m) => ({ v: m.cents / 100 }) }),
+            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents / 100 }) }),
         );
         assert.deepEqual(types.convert(new Money(1250)), { v: 12.5 });
     });
 
     it('writes a subclass as whatever its base was registered as', () => {
         const types = typesFor(
-            withType(defaultTypes(), Money, { convert: (m) => ({ v: m.cents / 100 }) }),
+            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents / 100 }) }),
         );
         assert.deepEqual(types.convert(new Cents(300)), { v: 3 });
     });
@@ -261,7 +259,7 @@ describe('ValueTypes: what claims a value', () => {
         // The lookup is remembered per prototype, so this is one walk and 99
         // hits — what it must not do is start answering something else.
         const types = typesFor(
-            withType(defaultTypes(), Money, { convert: (m) => ({ v: m.cents }) }),
+            withType(defaultTypes, Money, { convert: (m) => ({ v: m.cents }) }),
         );
         for (let k = 0; k < 100; k++) {
             assert.deepEqual(types.convert(new Money(k)), { v: k });
@@ -269,11 +267,11 @@ describe('ValueTypes: what claims a value', () => {
     });
 
     it('finds a bigint by the class it would be written as', () => {
-        assert.deepEqual(typesFor(defaultTypes()).convert(7n), { v: 7 });
+        assert.deepEqual(typesFor(defaultTypes).convert(7n), { v: 7 });
     });
 
     it('claims nothing for an object that has no prototype at all', () => {
-        assert.equal(typesFor(defaultTypes()).handlerFor(Object.create(null) as object), undefined);
+        assert.equal(typesFor(defaultTypes).handlerFor(Object.create(null) as object), undefined);
     });
 
     it('knows nothing a map left out', () => {
@@ -285,7 +283,7 @@ describe('ValueTypes: what claims a value', () => {
     it('does not reach the Object entry by walking the chain', () => {
         // `handlerFor` stops before `Object.prototype`: a plain object has to
         // get past `isStyledCell` before the fallback can claim it.
-        const types = typesFor(withType(defaultTypes(), Object, { convert: () => ({ v: 'any' }) }));
+        const types = typesFor(withType(defaultTypes, Object, { convert: () => ({ v: 'any' }) }));
         assert.equal(types.handlerFor({}), undefined);
         assert.equal(types.handlerFor(new Money(1)), undefined);
         assert.ok(types.objectHandler);
@@ -293,7 +291,7 @@ describe('ValueTypes: what claims a value', () => {
 
     it('converts through the Object entry once nothing else has claimed the value', () => {
         const types = typesFor(
-            withType(defaultTypes(), Object, { convert: (o) => ({ v: JSON.stringify(o) }) }),
+            withType(defaultTypes, Object, { convert: (o) => ({ v: JSON.stringify(o) }) }),
         );
         assert.deepEqual(types.convert({ a: 1 }), { v: '{"a":1}' });
         // A registered class still wins over it.
@@ -312,7 +310,7 @@ describe('a value of a registered type, in a row', () => {
         }
     }
 
-    const TYPES = withType(defaultTypes(), HourRange, {
+    const TYPES = withType(defaultTypes, HourRange, {
         convert: (range) => ({ v: range.toString() }),
     });
 
@@ -349,7 +347,7 @@ describe('a value of a registered type, in a row', () => {
 
     it('refuses a class nobody registered, by name', () => {
         assert.throws(
-            () => rowXml([new HourRange('8:00', '10:30')], defaultTypes()),
+            () => rowXml([new HourRange('8:00', '10:30')], defaultTypes),
             /"HourRange" is not one of them/,
         );
     });
@@ -386,7 +384,7 @@ describe('a value of a registered type, in a row', () => {
         class Interval {
             constructor(readonly ms: number) {}
         }
-        const types = withType(defaultTypes(), Interval, {
+        const types = withType(defaultTypes, Interval, {
             convert: (interval) => ({ v: interval.ms / 86400000, numFmt: '[h]:mm:ss' }),
         });
         const widths = new WidthMeter(50);

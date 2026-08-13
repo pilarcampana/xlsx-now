@@ -326,7 +326,7 @@ describe('a workbook that was taught a type of its own, read back with exceljs',
         }
     }
 
-    const TYPES = withType(defaultTypes(), HourRange, {
+    const TYPES = withType(defaultTypes, HourRange, {
         convert: (range) => ({ v: range.toString() }),
     });
 

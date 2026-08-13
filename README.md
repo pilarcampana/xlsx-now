@@ -624,7 +624,7 @@ A sheet holds four things: a number, a boolean, a string, or nothing. Anything
 else has to become one of them on the way in, and `types` is where a workbook
 is told how.
 
-It is a `Map` from a class to the conversion for it. `defaultTypes()` is what a
+It is a `Map` from a class to the conversion for it. `defaultTypes` is what a
 workbook uses when it is told nothing, and `withType` builds one map from
 another:
 
@@ -637,7 +637,7 @@ class HourRange {
 }
 
 // Once, wherever the application's own types live:
-export const appTypes = withType(defaultTypes(), HourRange, {
+export const appTypes = withType(defaultTypes, HourRange, {
     convert: (range) => ({ v: range.toString() }),
 });
 
@@ -672,7 +672,7 @@ measuring `v` there is not measuring imprecisely — it is measuring the wrong
 thing. A duration written as a fraction of a day is the clearest case:
 
 ```js
-withType(defaultTypes(), Interval, {
+withType(defaultTypes, Interval, {
     convert: (interval) => ({ v: interval.ms / 86400000, numFmt: '[h]:mm:ss' }),
 });
 ```
@@ -699,10 +699,10 @@ a conversion that knows its own magnitude says so, as `dateValue` does.
 | `BigInt` | a number while a cell can hold one exactly, text past that |
 | `URL` | its `href` |
 
-The three `Temporal` entries are there when the environment has a `Temporal`,
-and that is why `defaultTypes` is a function and not the map itself: a polyfill
-is installed by importing it, and nothing says that import ran before this
-package was loaded. So the map is built when a workbook is.
+The three `Temporal` entries are there when the environment has a `Temporal`:
+native, or a polyfill installed by importing it — which happens before anything
+that could use it, so what the map holds is settled once, when the package
+loads.
 
 `Date` is one entry among the others and not a case above them, which is the
 whole test of whether this generalizes: a class of your own goes in the same
@@ -711,7 +711,7 @@ so a type of yours that is a date in any sense reads the same `dateFormat`
 everything else does — `dateValue` is exported for exactly that:
 
 ```js
-withType(defaultTypes(), Timestamp, {
+withType(defaultTypes, Timestamp, {
     convert: (own, context) => dateValue(own.toDate(), context),
 });
 ```
@@ -735,7 +735,7 @@ so none of them is written out as whatever `String()` makes of it:
 
 ```
 A cell is a value of a type the workbook knows, and "HourRange" is not one of
-them: add it to the writer's "types", with withType(defaultTypes(), ...).
+them: add it to the writer's "types", with withType(defaultTypes, ...).
 ```
 
 The lookup walks the prototype chain, so `class Timestamp extends Date` needs
@@ -1434,7 +1434,11 @@ npm run test-ci  # mocha under c8: console summary, coverage/lcov.info, coverage
 ```
 
 The tests live in [`test/`](test), are written in TypeScript against the
-sources in `src/` (never against `dist/`), and run on Node. The browser side
+sources in `src/` (never against `dist/`), and run on Node. `.mocharc.json`
+requires `temporal-polyfill/global` before them, since the Node these run on
+has no `Temporal` of its own and the reader's default asks for one — installed
+there rather than per file, because before the package loads is exactly where
+a polyfill belongs. The browser side
 is a second stage: what runs today is what Node can run, which turns out to
 be almost everything — `Blob`, `Response` and the Web Streams are all native
 here, so `src/browser/index.ts` is covered too, with only the DOM around it

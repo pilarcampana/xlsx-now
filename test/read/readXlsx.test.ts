@@ -2,7 +2,6 @@
 // writes, ones built by hand here, and one written by `exceljs` — which is
 // the only one of the three that had nothing to do with this repository, and
 // so the only one that can say the reader agrees with anything but itself.
-import 'temporal-polyfill/global';
 import assert from 'node:assert/strict';
 import { Temporal } from 'temporal-polyfill';
 import ExcelJS from 'exceljs';

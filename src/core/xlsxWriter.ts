@@ -177,7 +177,7 @@ export class XlsxWriter {
         // What a date falls back to is the workbook's, and it is what the
         // types are handed: one `dateFormat` for every type that is a date in
         // any sense, not one per class that happens to be one.
-        this.types = new ValueTypes(options.types ?? defaultTypes(), {
+        this.types = new ValueTypes(options.types ?? defaultTypes, {
             dates: new DateFormats(options),
             clock: writeDates(options.dates),
         });

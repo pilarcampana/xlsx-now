@@ -1,4 +1,3 @@
-import 'temporal-polyfill/global';
 import assert from 'node:assert/strict';
 import { Temporal } from 'temporal-polyfill';
 import { XlsxWriter, type XlsxWriterOptions } from '../src/core/xlsxWriter.js';

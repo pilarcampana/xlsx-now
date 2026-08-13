@@ -1,4 +1,5 @@
 {
+    "require": "temporal-polyfill/global",
     "spec": "dist-test/test/**/*.test.js",
     "timeout": 20000
 }

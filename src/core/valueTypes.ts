@@ -239,25 +239,24 @@ export function urlValue(value: URL): ConvertedValue {
  * has no one right way to be written down, so it is refused by name rather
  * than written out as whatever `String()` makes of it.
  *
- * The three `Temporal` classes are here when the environment has them, and
- * that is why this is a function and not the map itself: `Temporal` may be
- * native or may be a polyfill, and a polyfill is installed by importing it —
- * which is not something this module can be sure happened before it loaded.
- * So the map is built when a workbook is, and `withType(defaultTypes(), ...)`
- * is how one is built from it.
+ * The three `Temporal` classes are among them where the environment has a
+ * `Temporal` — which is settled by the time this module loads, and so is this
+ * map. See `temporalApi`.
  */
-export function defaultTypes(): TypeMap {
-    const types = new Map<TypeKey, RegisteredHandler>([
+export const defaultTypes: TypeMap = withTemporal(
+    new Map<TypeKey, RegisteredHandler>([
         [Date, { convert: dateValue }],
         [BigInt, { convert: bigintValue }],
         [URL, { convert: urlValue }],
-    ]);
-    const temporal = temporalApi();
-    if (temporal !== undefined) {
-        types.set(temporal.PlainDate, { convert: plainDateValue });
-        types.set(temporal.PlainDateTime, { convert: plainDateTimeValue });
-        types.set(temporal.PlainTime, { convert: plainTimeValue });
-    }
+    ]),
+);
+
+/** The three `Temporal` classes added to a map, where there are three to add. */
+function withTemporal(types: Map<TypeKey, RegisteredHandler>): TypeMap {
+    if (temporalApi === undefined) return types;
+    types.set(temporalApi.PlainDate, { convert: plainDateValue });
+    types.set(temporalApi.PlainDateTime, { convert: plainDateTimeValue });
+    types.set(temporalApi.PlainTime, { convert: plainTimeValue });
     return types;
 }
 
@@ -265,7 +264,7 @@ export function defaultTypes(): TypeMap {
  * The same types, and one more.
  *
  * ```js
- * export const appTypes = withType(defaultTypes(), HourRange, {
+ * export const appTypes = withType(defaultTypes, HourRange, {
  *     convert: (range) => ({ v: range.toString() }),
  * });
  * ```
@@ -327,7 +326,7 @@ export class ValueTypes {
     private readonly resolved = new WeakMap<object, RegisteredHandler | null>();
 
     constructor(
-        types: TypeMap = defaultTypes(),
+        types: TypeMap = defaultTypes,
         context: ConvertContext = { dates: DEFAULT_DATE_FORMATS, clock: 'local' },
     ) {
         let objectHandler: RegisteredHandler | undefined;

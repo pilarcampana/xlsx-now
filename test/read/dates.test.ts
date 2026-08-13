@@ -1,16 +1,12 @@
 // The four answers to one number.
 //
-// The polyfill is imported for the same reason a caller would import it: the
-// environment these tests run in has no `Temporal` of its own, and `temporal`
-// is the mode the reader defaults to. It is imported here and not in a setup
-// file because nothing in the package reads the global before it is used —
-// which is the point of the check, and is what this file also tests, by taking
-// the global away again.
-import 'temporal-polyfill/global';
+// The environment these tests run in has no `Temporal` of its own, so the
+// polyfill is installed for the whole suite by `.mocharc.json` — before any of
+// the package loads, which is the one order this package counts on. What is
+// imported here is the same classes the global carries, for their types: the
+// polyfill installs the global but declares nothing for it, and these tests
+// are the one place that needs to name `Temporal.PlainDate` in TypeScript.
 import assert from 'node:assert/strict';
-// The same classes the global carries, imported for their types: the polyfill
-// installs the global but declares nothing for it, and these tests are the one
-// place that needs to name `Temporal.PlainDate` in TypeScript.
 import { Temporal } from 'temporal-polyfill';
 import { readDate, readDates } from '../../src/core/read/dates.js';
 
@@ -32,23 +28,32 @@ describe('readDates', () => {
         );
     });
 
-    it('says so up front when temporal was asked for and there is no Temporal', () => {
+    it('says so up front when temporal was asked for and there is no Temporal', async () => {
         const global = globalThis as { Temporal?: unknown };
         const temporal = global.Temporal;
-        // An environment without it, for as long as this test takes.
         delete global.Temporal;
         try {
-            assert.throws(() => readDates('temporal'), /Temporal\.PlainDate/);
+            // A second copy of the module, loaded the way an environment with
+            // no `Temporal` would load it — which is the only way to be
+            // without one, since the global is read when the module loads and
+            // never again.
+            const path = '../../src/core/temporal.js';
+            const fresh = (await import(`${path}?no-temporal`)) as typeof import(
+                '../../src/core/temporal.js'
+            );
+            assert.equal(fresh.temporalApi, undefined);
+            assert.throws(() => fresh.requireTemporal(), /Temporal\.PlainDate/);
             assert.throws(
-                () => readDates(undefined),
+                () => fresh.requireTemporal(),
                 /dates: "utcDate", "localDate" or "isoString"/,
             );
-            // The three that do not need it go on working without it.
-            assert.equal(readDate(DAY, 'isoString'), '2024-01-15');
-            assert.ok(readDate(DAY, 'utcDate') instanceof Date);
         } finally {
             global.Temporal = temporal;
         }
+
+        // And the three modes that need no Temporal never ask for one.
+        assert.equal(readDate(DAY, 'isoString'), '2024-01-15');
+        assert.ok(readDate(DAY, 'utcDate') instanceof Date);
     });
 });
 
