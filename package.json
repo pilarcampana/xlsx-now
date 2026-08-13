@@ -1,6 +1,6 @@
 {
   "name": "xlsx-now",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "PoC: isomorphic (Node + browser) streaming XLSX writer with cell styles, number/date formats and formulas, and a reader for the data",
   "type": "module",
   "license": "MIT",
