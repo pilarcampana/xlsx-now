@@ -39,6 +39,42 @@ function archive(entries: Record<string, string>, level?: 0): Uint8Array {
     return bytes();
 }
 
+/** The bytes an end-of-central-directory record starts with. */
+const EOCD_SIGNATURE = Uint8Array.of(0x50, 0x4b, 0x05, 0x06);
+
+/** How long that record is, comment aside, which is where its length lives. */
+const EOCD_SIZE = 22;
+
+/** The start of an OLE2 compound file, which is what a real `.xls` is. */
+const OLE2_HEAD = Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1);
+
+/** And one more format to show the case is not about `.xls` in particular. */
+const PDF_HEAD = Uint8Array.of(0x25, 0x50, 0x44, 0x46, 0x2d);
+
+/**
+ * `head` and then filler carrying an end-of-central-directory signature,
+ * which is the false positive this is about: four bytes any binary can have
+ * in it by chance, far enough from the end for a whole record to seem to fit.
+ */
+function withStraySignature(head: Uint8Array): Uint8Array {
+    const filler = new Uint8Array(512).fill(0x41);
+    filler.set(EOCD_SIGNATURE, 200);
+    const whole = new Uint8Array(head.length + filler.length);
+    whole.set(head);
+    whole.set(filler, head.length);
+    return whole;
+}
+
+/** The same archive with a comment on the end of its end record. */
+function withComment(bytes: Uint8Array, comment: Uint8Array): Uint8Array {
+    const whole = new Uint8Array(bytes.length + comment.length);
+    whole.set(bytes);
+    whole.set(comment, bytes.length);
+    const eocd = bytes.length - EOCD_SIZE;
+    new DataView(whole.buffer).setUint16(eocd + 20, comment.length, true);
+    return whole;
+}
+
 describe('readCentralDirectory', () => {
     it('finds every entry, by name', async () => {
         const access = bytesAccess(archive({ 'first.txt': 'hello', 'dir/second.txt': 'bye' }));
@@ -58,6 +94,37 @@ describe('readCentralDirectory', () => {
             readCentralDirectory(bytesAccess(new TextEncoder().encode('no soy un zip'))),
             /not a zip archive/,
         );
+    });
+
+    it('names the format of an .xls instead of talking about a central directory', async () => {
+        const error = await readCentralDirectory(bytesAccess(withStraySignature(OLE2_HEAD))).then(
+            () => undefined,
+            (thrown: Error) => thrown,
+        );
+        assert.match(error?.message ?? '', /Excel 97-2003/);
+        assert.match(error?.message ?? '', /\.xlsx/);
+        // The point of the whole thing: the stray signature must not have
+        // turned this into a complaint about a directory that never existed.
+        assert.doesNotMatch(error?.message ?? '', /central directory/);
+    });
+
+    it('refuses any other binary that happens to carry the end signature', async () => {
+        await assert.rejects(
+            readCentralDirectory(bytesAccess(withStraySignature(PDF_HEAD))),
+            /not a zip archive.*unknown format/,
+        );
+    });
+
+    it('reads past a stray end signature in the comment of a real archive', async () => {
+        // A zip comment is arbitrary bytes at the very end of the file, so it
+        // is searched *before* the real record. One that carries the
+        // signature is the case the check on the candidate is for.
+        const comment = new Uint8Array(64).fill(0x41);
+        comment.set(EOCD_SIGNATURE, 8);
+        const access = bytesAccess(withComment(archive({ 'a.txt': 'hola' }), comment));
+        const entries = await readCentralDirectory(access);
+        assert.deepEqual([...entries.keys()], ['a.txt']);
+        assert.equal(await readEntryText(access, entries.get('a.txt')!), 'hola');
     });
 });
 
@@ -110,8 +177,10 @@ describe('entryChunks', () => {
 
     it('refuses an entry that is not where the directory says it is', async () => {
         const bytes = archive({ 'a.txt': 'hola' });
-        // The first entry starts at byte 0, so this is its signature.
-        bytes[0] = 0;
+        // The first entry starts at byte 0, so this is its signature — the
+        // third byte of it and not the first, which is the `PK` the reader
+        // now looks at before it goes anywhere near the entries.
+        bytes[2] = 0;
         const access = bytesAccess(bytes);
         const entry = (await readCentralDirectory(access)).get('a.txt')!;
         await assert.rejects(readEntry(access, entry), /local file header/);

@@ -19,6 +19,23 @@ const EOCD_SIGNATURE = 0x06054b50;
 const CENTRAL_HEADER_SIGNATURE = 0x02014b50;
 const LOCAL_HEADER_SIGNATURE = 0x04034b50;
 
+/**
+ * The two bytes every zip begins with, and the beginning of the one format
+ * that arrives here often enough to be worth naming.
+ *
+ * A file that does not start with `PK` is not a zip, and saying so from the
+ * first bytes is worth more than it looks: the search for the end record runs
+ * backwards over the tail and the four bytes it looks for can occur by
+ * chance in any binary, so without this the refusal would come out of the
+ * central directory instead, describing a record that was never there.
+ *
+ * `D0 CF 11 E0 A1 B1 1A E1` is OLE2, the container of Excel 97-2003 — a real
+ * `.xls`, which this reader does not read but can at least name, because that
+ * is the difference between an error the user can act on and one they cannot.
+ */
+const ZIP_SIGNATURE = [0x50, 0x4b];
+const OLE2_SIGNATURE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+
 const EOCD_SIZE = 22;
 const CENTRAL_HEADER_SIZE = 46;
 const LOCAL_HEADER_SIZE = 30;
@@ -58,19 +75,94 @@ function view(bytes: Uint8Array): DataView {
     return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
+function startsWith(bytes: Uint8Array, signature: readonly number[]): boolean {
+    return bytes.length >= signature.length && signature.every((byte, at) => bytes[at] === byte);
+}
+
 /**
- * Where the end-of-central-directory record starts.
+ * Refuses, by the first bytes, a file that is not a zip.
+ *
+ * This is not the same check as the one below and does not replace it: a
+ * truncated or corrupt zip still gets past here and is caught by the end
+ * record. What it does is keep a file of another format entirely from being
+ * searched at all, so what the caller reads is what the file *is* rather than
+ * what a chance run of four bytes made of it.
+ */
+async function refuseIfNotZip(access: RandomAccess): Promise<void> {
+    const head = await access.read(0, Math.min(access.size, OLE2_SIGNATURE.length));
+    if (startsWith(head, ZIP_SIGNATURE)) return;
+    if (startsWith(head, OLE2_SIGNATURE)) {
+        throw new Error(
+            'This is an Excel 97-2003 file (.xls, BIFF8), not an .xlsx package. This reader only reads OOXML (.xlsx); save it as .xlsx.',
+        );
+    }
+    throw new Error('This is not a zip archive, so it cannot be an .xlsx package: unknown format.');
+}
+
+/** The three fields of the end record that say where the directory is. */
+interface EndOfCentralDirectory {
+    count: number;
+    directorySize: number;
+    directoryOffset: number;
+}
+
+/**
+ * Whether the directory a candidate record points at is really there.
+ *
+ * The four bytes of the signature are not enough to have found the record:
+ * they can fall inside an archive comment as easily as inside compressed
+ * data. So the candidate is asked to agree with the file — a directory that
+ * fits inside it, and a central header where it says one starts. Without
+ * this, a wrong candidate is only noticed further down, in the entry loop,
+ * which then reports a malformed directory for an archive whose directory is
+ * fine and was never the one being read.
+ */
+async function pointsAtCentralDirectory(
+    access: RandomAccess,
+    { count, directorySize, directoryOffset }: EndOfCentralDirectory,
+): Promise<boolean> {
+    // The ZIP64 placeholders point nowhere by design, and they are what a
+    // real ZIP64 archive carries here: taking the candidate means the refusal
+    // names ZIP64, which is the true reason, instead of the search walking
+    // past the record and ending at "no end-of-central-directory".
+    if (
+        count === ZIP64_MARKER_16 ||
+        directorySize === ZIP64_MARKER_32 ||
+        directoryOffset === ZIP64_MARKER_32
+    ) {
+        return true;
+    }
+    if (directoryOffset + directorySize > access.size) return false;
+    // An archive with nothing in it has no header to look at, and its
+    // directory is the empty one that is exactly as long as it says.
+    if (count === 0) return directorySize === 0;
+    if (directorySize < CENTRAL_HEADER_SIZE) return false;
+    return view(await access.read(directoryOffset, 4)).getUint32(0, true) === CENTRAL_HEADER_SIGNATURE;
+}
+
+/**
+ * The end-of-central-directory record: where the entries are, and how many.
  *
  * It is the last thing in the file, but its own last field is a comment of
  * any length up to 64 KB, so its position is not fixed and has to be searched
  * for backwards from the end. Backwards and not forwards because the
  * signature can also occur inside compressed data, and the last one is the
- * real one.
+ * real one — and every candidate is checked against the file before it is
+ * taken, because being last is not the same as being right.
  */
-function findEndOfCentralDirectory(tail: Uint8Array): number {
+async function findEndOfCentralDirectory(
+    access: RandomAccess,
+    tail: Uint8Array,
+): Promise<EndOfCentralDirectory> {
     const data = view(tail);
     for (let offset = tail.length - EOCD_SIZE; offset >= 0; offset--) {
-        if (data.getUint32(offset, true) === EOCD_SIGNATURE) return offset;
+        if (data.getUint32(offset, true) !== EOCD_SIGNATURE) continue;
+        const record: EndOfCentralDirectory = {
+            count: data.getUint16(offset + 10, true),
+            directorySize: data.getUint32(offset + 12, true),
+            directoryOffset: data.getUint32(offset + 16, true),
+        };
+        if (await pointsAtCentralDirectory(access, record)) return record;
     }
     throw new Error('This is not a zip archive: it has no end-of-central-directory record.');
 }
@@ -91,14 +183,10 @@ function findEndOfCentralDirectory(tail: Uint8Array): number {
 export async function readCentralDirectory(
     access: RandomAccess,
 ): Promise<ReadonlyMap<string, ZipEntry>> {
+    await refuseIfNotZip(access);
     const tailSize = Math.min(access.size, EOCD_SIZE + MAX_COMMENT_SIZE);
     const tail = await access.read(access.size - tailSize, tailSize);
-    const eocd = findEndOfCentralDirectory(tail);
-    const header = view(tail);
-
-    const count = header.getUint16(eocd + 10, true);
-    const directorySize = header.getUint32(eocd + 12, true);
-    const directoryOffset = header.getUint32(eocd + 16, true);
+    const { count, directorySize, directoryOffset } = await findEndOfCentralDirectory(access, tail);
     if (
         count === ZIP64_MARKER_16 ||
         directorySize === ZIP64_MARKER_32 ||
