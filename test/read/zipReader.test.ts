@@ -75,6 +75,14 @@ function withComment(bytes: Uint8Array, comment: Uint8Array): Uint8Array {
     return whole;
 }
 
+/** The message of the failure, so a case can say what it is *not* about too. */
+async function failureOf(bytes: Uint8Array): Promise<string> {
+    return readCentralDirectory(bytesAccess(bytes)).then(
+        () => assert.fail('it read something that is not a package'),
+        (thrown: Error) => thrown.message,
+    );
+}
+
 describe('readCentralDirectory', () => {
     it('finds every entry, by name', async () => {
         const access = bytesAccess(archive({ 'first.txt': 'hello', 'dir/second.txt': 'bye' }));
@@ -89,30 +97,58 @@ describe('readCentralDirectory', () => {
         assert.ok((entry?.compressedSize ?? 0) > 0, 'the compressed size is missing');
     });
 
-    it('refuses something that is not a zip at all', async () => {
-        await assert.rejects(
-            readCentralDirectory(bytesAccess(new TextEncoder().encode('no soy un zip'))),
-            /not a zip archive/,
-        );
+    it('refuses something it cannot read, in terms of the file and not the zip', async () => {
+        const error = await failureOf(new TextEncoder().encode('no soy un archivo xlsx'));
+        assert.match(error, /Invalid file format/);
+        assert.match(error, /\.xlsx/);
     });
 
-    it('names the format of an .xls instead of talking about a central directory', async () => {
-        const error = await readCentralDirectory(bytesAccess(withStraySignature(OLE2_HEAD))).then(
-            () => undefined,
-            (thrown: Error) => thrown,
-        );
-        assert.match(error?.message ?? '', /Excel 97-2003/);
-        assert.match(error?.message ?? '', /\.xlsx/);
-        // The point of the whole thing: the stray signature must not have
-        // turned this into a complaint about a directory that never existed.
-        assert.doesNotMatch(error?.message ?? '', /central directory/);
+    it('names an .xls instead of talking about a central directory', async () => {
+        const error = await failureOf(withStraySignature(OLE2_HEAD));
+        assert.match(error, /Excel 97-2003/);
+        assert.match(error, /\.xlsx/);
+        // The whole point: the stray signature must not have turned this into
+        // a complaint about a directory that never existed.
+        assert.doesNotMatch(error, /central directory/);
     });
 
-    it('refuses any other binary that happens to carry the end signature', async () => {
-        await assert.rejects(
-            readCentralDirectory(bytesAccess(withStraySignature(PDF_HEAD))),
-            /not a zip archive.*unknown format/,
-        );
+    it('says the same of any other binary carrying the end signature', async () => {
+        // The case was found with an .xls, but nothing about it is: four bytes
+        // land where they land.
+        assert.match(await failureOf(withStraySignature(PDF_HEAD)), /Invalid file format/);
+    });
+
+    it('says nothing about zips to someone who handed over a file', async () => {
+        for (const bytes of [
+            new Uint8Array(0),
+            withStraySignature(OLE2_HEAD),
+            withStraySignature(PDF_HEAD),
+            Uint8Array.of(0x50, 0x4b, 0x03, 0x04, 1, 2, 3),
+        ]) {
+            assert.doesNotMatch(await failureOf(bytes), /zip|central directory/i);
+        }
+    });
+
+    it('still reads an archive whose entries are read through a stray candidate', async () => {
+        // Nothing here is refused for how it starts: the only question asked
+        // is whether the entries can be reached, and they can.
+        const access = bytesAccess(archive({ 'a.txt': 'hola', 'b.txt': 'chau' }));
+        assert.deepEqual([...(await readCentralDirectory(access)).keys()], ['a.txt', 'b.txt']);
+    });
+
+    it('takes an end record of no entries even if it claims a size', async () => {
+        // A directory of nothing that says it is 40 bytes long is odd, and it
+        // still read as an archive of no entries before any of this. Turning
+        // it away now would be refusing something that used to go through.
+        const bytes = new Uint8Array(200).fill(0x41);
+        const eocd = bytes.length - EOCD_SIZE;
+        bytes.set(EOCD_SIGNATURE, eocd);
+        const record = new DataView(bytes.buffer);
+        record.setUint16(eocd + 10, 0, true); // count
+        record.setUint32(eocd + 12, 40, true); // directorySize
+        record.setUint32(eocd + 16, 0, true); // directoryOffset
+        record.setUint16(eocd + 20, 0, true); // comment length
+        assert.equal((await readCentralDirectory(bytesAccess(bytes))).size, 0);
     });
 
     it('reads past a stray end signature in the comment of a real archive', async () => {
@@ -177,10 +213,8 @@ describe('entryChunks', () => {
 
     it('refuses an entry that is not where the directory says it is', async () => {
         const bytes = archive({ 'a.txt': 'hola' });
-        // The first entry starts at byte 0, so this is its signature — the
-        // third byte of it and not the first, which is the `PK` the reader
-        // now looks at before it goes anywhere near the entries.
-        bytes[2] = 0;
+        // The first entry starts at byte 0, so this is its signature.
+        bytes[0] = 0;
         const access = bytesAccess(bytes);
         const entry = (await readCentralDirectory(access)).get('a.txt')!;
         await assert.rejects(readEntry(access, entry), /local file header/);

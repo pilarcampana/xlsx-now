@@ -144,8 +144,8 @@ describe('the Node face', () => {
 
         it('leaves no file open behind a package that does not read', async () => {
             const path = join(dir, 'no-es-xlsx.xlsx');
-            await writeFile(path, 'esto no es un zip');
-            await assert.rejects(openXlsxFile(path), /not a zip archive/);
+            await writeFile(path, 'esto no es un xlsx');
+            await assert.rejects(openXlsxFile(path), /Invalid file format/);
         });
     });
 

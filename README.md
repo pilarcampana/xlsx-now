@@ -1364,9 +1364,8 @@ for a page with no build step, since `saxes` publishes CommonJS only.
 - **ZIP64 archives**, which is to say files above 4 GB. Detected and refused
   rather than misread.
 - **Encrypted workbooks**, `.xls` (the pre-2007 binary format) and `.xlsb`.
-  What arrives here is refused by what it is: a file that does not start with
-  `PK` is not a zip and is said so from its first bytes, and an OLE2 container
-  — which is what a real `.xls` is — is named as an Excel 97-2003 file, so the
+  A file that will not open is said to be an invalid format where an `.xlsx`
+  was expected, and an `.xls` is named as the Excel 97-2003 file it is, so the
   answer is "save it as .xlsx" and not a complaint about a central directory.
 
 ## Compression benchmark
